@@ -1,0 +1,48 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+!.env.production.example
+!backend/.env.example
+*.pem
+*.key
+*.crt
+*credential*
+*secret*
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Databases and exports
+*.db
+*.sqlite
+*.sqlite3
+*.dump
+*.sql
+backups/
+
+# Node / Next.js
+node_modules/
+.next/
+*.tsbuildinfo
+out/
+coverage/
+
+# Local deployment overrides and temporary backups
+docker-compose.host.yml
+frontend.backup-before-ui-fix/
+*.backup
+*.bak
+*.tmp
+*.tar.gz
+
+# Operating system and editor
+.DS_Store
+.vscode/
+.idea/

@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: faztrack_attendance
+      POSTGRES_USER: faztrack
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: ["faztrack_pg:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U faztrack -d faztrack_attendance"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      FAZTRACK_ENV: production
+      FAZTRACK_DATABASE_URL: postgresql+psycopg://faztrack:${POSTGRES_PASSWORD}@postgres:5432/faztrack_attendance
+      FAZTRACK_JWT_SECRET: ${FAZTRACK_JWT_SECRET:?Set FAZTRACK_JWT_SECRET}
+      FAZTRACK_CORS_ORIGINS: ${APP_ORIGIN:?Set APP_ORIGIN}
+      FAZTRACK_DEMO_SEED_PASSWORD: ${FAZTRACK_DEMO_SEED_PASSWORD:-}
+      FAZTRACK_DEMO_WORKER_PIN: ${FAZTRACK_DEMO_WORKER_PIN:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ${PUBLIC_API_URL:?Set PUBLIC_API_URL}
+    restart: unless-stopped
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+    depends_on:
+      backend:
+        condition: service_healthy
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN}
+      API_DOMAIN: ${API_DOMAIN:?Set API_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      frontend:
+        condition: service_started
+volumes:
+  faztrack_pg:
+  caddy_data:
+  caddy_config:

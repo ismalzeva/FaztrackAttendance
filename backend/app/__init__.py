@@ -1,0 +1,2 @@
+"""Faztrack Attendance backend."""
+
