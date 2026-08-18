@@ -87,3 +87,13 @@ npm run dev
 ```
 
 Set `NEXT_PUBLIC_API_BASE_URL=http://localhost:8000/api/v1`.
+
+## Google Sheets master template
+
+- [Download Excel template](docs/templates/Faztrack_Attendance_Google_Sheets_Template_v1.0.xlsx)
+- [Open native Google Sheets template](https://docs.google.com/spreadsheets/d/1re0MWDTKvz00PdN4Q1tvbH1aBOZiPFTcfZycsGgoIZw/edit)
+
+The workbook contains the five required tabs: `Projects`, `Workers`,
+`Assignments`, `Schedules`, and `Supervisors`. See
+[`docs/GOOGLE_SHEETS_TEMPLATE.md`](docs/GOOGLE_SHEETS_TEMPLATE.md) for field
+definitions and import rules.
