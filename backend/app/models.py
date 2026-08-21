@@ -261,7 +261,7 @@ class Site(Base):
     site_type: Mapped[SiteType] = mapped_column(Enum(SiteType))
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    radius_m: Mapped[int | None] = mapped_column(Integer, nullable=True)  # TBC until geofence data provided
+    radius_m: Mapped[int | None] = mapped_column(Integer, nullable=True)
     timezone: Mapped[str] = mapped_column(String(80), default="Asia/Jakarta")
     status: Mapped[SiteStatus] = mapped_column(Enum(SiteStatus), default=SiteStatus.ACTIVE)
     effective_from: Mapped[date] = mapped_column(Date)
@@ -279,7 +279,7 @@ class Equipment(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     equipment_code: Mapped[str] = mapped_column(String(50))
-    equipment_type: Mapped[str] = mapped_column(String(80))  # DUMP_TRUCK, EXCAVATOR, etc.
+    equipment_type: Mapped[str] = mapped_column(String(80))
     status: Mapped[EquipmentStatus] = mapped_column(Enum(EquipmentStatus), default=EquipmentStatus.ACTIVE)
     effective_from: Mapped[date] = mapped_column(Date)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
@@ -322,7 +322,7 @@ class Competency(Base):
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     competency_code: Mapped[str] = mapped_column(String(50))
-    employee_id: Mapped[str] = mapped_column(String(36), index=True)  # references Worker.id
+    employee_id: Mapped[str] = mapped_column(String(36), index=True)
     equipment_type: Mapped[str] = mapped_column(String(80))
     certification_no: Mapped[str | None] = mapped_column(String(100), nullable=True)
     valid_from: Mapped[date] = mapped_column(Date)
@@ -351,7 +351,7 @@ class CheckpointPolicy(Base):
     __table_args__ = (UniqueConstraint("tenant_id", "checkpoint_type", "shift_id", name="uq_checkpoint_shift"),)
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
-    checkpoint_type: Mapped[str] = mapped_column(String(80))  # BRIEFING_IN, EQUIPMENT_CHECK_IN, etc.
+    checkpoint_type: Mapped[str] = mapped_column(String(80))
     shift_id: Mapped[str] = mapped_column(String(36), ForeignKey("shift_templates.id"), index=True)
     window_start_offset_min: Mapped[int] = mapped_column(Integer, default=0)
     window_end_offset_min: Mapped[int] = mapped_column(Integer, default=0)
@@ -411,7 +411,7 @@ class RosterAssignment(Base):
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     roster_code: Mapped[str] = mapped_column(String(50))
     operating_date: Mapped[date] = mapped_column(Date)
-    employee_id: Mapped[str] = mapped_column(String(36), index=True)  # Worker.id
+    employee_id: Mapped[str] = mapped_column(String(36), index=True)
     crew_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     site_cycle_day: Mapped[int | None] = mapped_column(Integer, nullable=True)
     site_status: Mapped[SiteStatusEnum] = mapped_column(Enum(SiteStatusEnum), default=SiteStatusEnum.ONSITE)
@@ -420,7 +420,7 @@ class RosterAssignment(Base):
     site_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sites.id"), nullable=True)
     planned_equipment_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("equipments.id"), nullable=True)
     rule_version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("rule_versions.id"), nullable=True, index=True)
-    effective_rule_version: Mapped[str | None] = mapped_column(String(100), nullable=True)  # display/snapshot label
+    effective_rule_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
     validation_status: Mapped[ValidationStatus] = mapped_column(Enum(ValidationStatus), default=ValidationStatus.DRAFT)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -472,7 +472,7 @@ class OverrideEvent(Base):
     exception_id: Mapped[str] = mapped_column(ForeignKey("exception_events.id"), index=True)
     action: Mapped[str] = mapped_column(String(80))
     reason: Mapped[str] = mapped_column(Text)
-    approved_by: Mapped[str] = mapped_column(String(36))  # User.id
+    approved_by: Mapped[str] = mapped_column(String(36))
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 class EmployeeMeta(Base):
@@ -493,3 +493,99 @@ class EmployeeMeta(Base):
     effective_from: Mapped[date] = mapped_column(Date)
     effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
     cycle_offset_days: Mapped[int] = mapped_column(Integer, default=0)
+
+# ─────────────────────────────────────────────────────────────
+# M2A: Canonical Attendance Event Foundation
+# Reusable for all tenants (Metro Mining, Lumin Park, future).
+# ─────────────────────────────────────────────────────────────
+
+class RawEventStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    PROCESSED = "PROCESSED"
+    DUPLICATE = "DUPLICATE"
+    SKIPPED = "SKIPPED"
+    ERROR = "ERROR"
+
+class CanonicalEventType(str, enum.Enum):
+    CHECK_IN = "CHECK_IN"
+    CHECK_OUT = "CHECK_OUT"
+    BREAK_IN = "BREAK_IN"
+    BREAK_OUT = "BREAK_OUT"
+    BRIEFING_IN = "BRIEFING_IN"
+    BRIEFING_OUT = "BRIEFING_OUT"
+    EQUIPMENT_CHECK_IN = "EQUIPMENT_CHECK_IN"
+    EQUIPMENT_CHECK_OUT = "EQUIPMENT_CHECK_OUT"
+    HANDOVER_START = "HANDOVER_START"
+    HANDOVER_END = "HANDOVER_END"
+    SUPERVISOR_OVERRIDE = "SUPERVISOR_OVERRIDE"
+
+class CanonicalProcessingStatus(str, enum.Enum):
+    PENDING = "PENDING"
+    SHIFT_RESOLVED = "SHIFT_RESOLVED"
+    AMBIGUOUS_SHIFT = "AMBIGUOUS_SHIFT"
+    MISSING_SHIFT = "MISSING_SHIFT"
+    VALID = "VALID"
+    INVALID = "INVALID"
+
+class RawEvent(Base):
+    """Immutable raw event from any source. Never modified after ingestion.
+    Sensitive material (credentials, tokens, biometric templates) must NOT be stored.
+    """
+    __tablename__ = "raw_events"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source", "source_event_id", name="uq_raw_event_source"),
+        Index("ix_raw_event_tenant_status", "tenant_id", "processing_status"),
+        Index("ix_raw_event_tenant_received", "tenant_id", "received_at"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    source: Mapped[str] = mapped_column(String(80))
+    source_event_id: Mapped[str] = mapped_column(String(200))
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    raw_timestamp: Mapped[str] = mapped_column(String(100))
+    raw_payload: Mapped[str] = mapped_column(Text)
+    processing_status: Mapped[RawEventStatus] = mapped_column(Enum(RawEventStatus), default=RawEventStatus.PENDING)
+    schema_version: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    canonical_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+class CanonicalAttendanceEvent(Base):
+    """Normalized attendance event -- canonical representation for all tenants.
+    Links back to raw source for full auditability.
+    """
+    __tablename__ = "canonical_attendance_events"
+    __table_args__ = (
+        Index("ix_canonical_tenant_emp_date", "tenant_id", "employee_id", "operating_date"),
+        Index("ix_canonical_tenant_date", "tenant_id", "operating_date"),
+        Index("ix_canonical_raw_event", "raw_event_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(36), index=True)
+    event_type: Mapped[CanonicalEventType] = mapped_column(Enum(CanonicalEventType))
+    local_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    utc_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    timezone: Mapped[str] = mapped_column(String(80))
+    operating_date: Mapped[date] = mapped_column(Date)
+    shift_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("shift_templates.id"), nullable=True)
+    site_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sites.id"), nullable=True)
+    location_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    equipment_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("equipments.id"), nullable=True)
+    source: Mapped[str] = mapped_column(String(80))
+    source_event_id: Mapped[str] = mapped_column(String(200))
+    raw_event_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("raw_events.id"), nullable=True)
+    latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accuracy_m: Mapped[float | None] = mapped_column(Float, nullable=True)
+    processing_status: Mapped[CanonicalProcessingStatus] = mapped_column(
+        Enum(CanonicalProcessingStatus), default=CanonicalProcessingStatus.PENDING
+    )
+    roster_assignment_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("roster_assignments.id"), nullable=True
+    )
+    legacy_attendance_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("attendance_events.id"), nullable=True
+    )
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
