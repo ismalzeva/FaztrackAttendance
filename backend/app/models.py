@@ -867,3 +867,138 @@ class RuleEvaluation(Base):
     evidence_key: Mapped[str] = mapped_column(String(200), default="")
     
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ─────────────────────────────────────────────────────────────
+# M3A: Exception Lifecycle Foundation
+# Generic exception case management with full audit trail.
+# ─────────────────────────────────────────────────────────────
+
+class ExceptionActionType(str, enum.Enum):
+    """Allowed exception lifecycle actions."""
+    ACKNOWLEDGE = "ACKNOWLEDGE"
+    RESOLVE = "RESOLVE"
+    WAIVE = "WAIVE"
+
+
+class ExceptionSourceType(str, enum.Enum):
+    """Source detection types that can create exception cases."""
+    RULE_EVALUATION = "RULE_EVALUATION"
+    EQUIPMENT_DISCREPANCY = "EQUIPMENT_DISCREPANCY"
+    CHECKPOINT_VALIDATION = "CHECKPOINT_VALIDATION"
+    ROSTER_VALIDATION = "ROSTER_VALIDATION"
+
+
+# Allowed state transitions for exception lifecycle
+EXCEPTION_TRANSITIONS = {
+    ExceptionStatus.OPEN: {ExceptionStatus.ACKNOWLEDGED, ExceptionStatus.RESOLVED, ExceptionStatus.WAIVED},
+    ExceptionStatus.ACKNOWLEDGED: {ExceptionStatus.RESOLVED, ExceptionStatus.WAIVED},
+    ExceptionStatus.RESOLVED: set(),   # terminal
+    ExceptionStatus.WAIVED: set(),     # terminal
+}
+
+
+class ExceptionCase(Base):
+    """Generic exception case — one per qualifying detection.
+
+    Created from RuleEvaluation, EquipmentDiscrepancy, CheckpointValidationResult,
+    or roster validation result. Idempotent via (tenant_id, source_type, source_id, exception_type).
+
+    Lifecycle: OPEN → ACKNOWLEDGED → RESOLVED / WAIVED
+    Immutable detection: human action adds context but never rewrites source.
+    """
+    __tablename__ = "exception_cases"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "source_type", "source_id", "exception_type",
+            name="uq_exception_source",
+        ),
+        Index("ix_exception_case_tenant_date", "tenant_id", "operating_date"),
+        Index("ix_exception_case_employee", "tenant_id", "employee_id", "operating_date"),
+        Index("ix_exception_case_status", "tenant_id", "status"),
+        Index("ix_exception_case_rule_code", "tenant_id", "exception_type"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+
+    # Exception classification
+    exception_type: Mapped[str] = mapped_column(String(80))  # e.g. LATE_BREAK_RETURN, EQUIPMENT_MISMATCH
+    severity: Mapped[ExceptionSeverity] = mapped_column(Enum(ExceptionSeverity))
+    status: Mapped[ExceptionStatus] = mapped_column(
+        Enum(ExceptionStatus), default=ExceptionStatus.OPEN
+    )
+
+    # Context
+    employee_id: Mapped[str] = mapped_column(String(36), index=True)
+    operating_date: Mapped[date] = mapped_column(Date)
+    shift_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("shift_templates.id"), nullable=True
+    )
+    equipment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    site_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    # Source traceability
+    source_type: Mapped[str] = mapped_column(String(80))  # ExceptionSourceType value
+    source_id: Mapped[str] = mapped_column(String(36))    # PK of source record
+    rule_version_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("rule_versions.id"), nullable=True
+    )
+
+    # Lifecycle timestamps
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    waived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Ownership
+    current_owner_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+    # Metadata
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now, onupdate=now
+    )
+
+
+class ExceptionAction(Base):
+    """Immutable audit record for each lifecycle transition on an ExceptionCase.
+
+    Every human action (acknowledge, resolve, waive) creates one row.
+    History cannot be rewritten.
+    """
+    __tablename__ = "exception_actions"
+    __table_args__ = (
+        Index("ix_exception_action_case", "exception_id"),
+        Index("ix_exception_action_tenant", "tenant_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    exception_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("exception_cases.id"), index=True
+    )
+
+    # Action
+    action_type: Mapped[ExceptionActionType] = mapped_column(Enum(ExceptionActionType))
+    actor_user_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    action_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    # Transition record
+    previous_status: Mapped[ExceptionStatus] = mapped_column(Enum(ExceptionStatus))
+    new_status: Mapped[ExceptionStatus] = mapped_column(Enum(ExceptionStatus))
+
+    # Context
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
