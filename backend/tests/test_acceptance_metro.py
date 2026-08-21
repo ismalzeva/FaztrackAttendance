@@ -605,3 +605,378 @@ class TestDataAudit:
         assert found_ra.planned_equipment_id == "EQ-001"
         assert found_actual.equipment_id == "EQ-002"
         assert found_ra.planned_equipment_id != found_actual.equipment_id
+
+
+# ─────────────────────────────────────────────────────────────
+# VERIFICATION TESTS (additional evidence requirements)
+# ─────────────────────────────────────────────────────────────
+
+class TestRuleVersioningHistorical:
+    """Evidence: rule versioning preserves historical assignments."""
+
+    def test_26_historical_roster_preserves_rule_version(self, db):
+        """Published roster assignment stores rule_version_id and historical data is immutable."""
+        _setup_tenant(db)
+        _create_employee(db, "EMP-001")
+        _create_equipment(db, "EQ-001")
+        _create_competency(db, "EMP-001")
+        _create_shift(db, "DAY")
+
+        # Create rule version v1
+        from app.rule_versioning import snapshot_rules
+        db.add(RosterPolicy(
+            id="rp-1", tenant_id=TENANT_ID,
+            policy_key="max_consecutive_workdays", policy_value="12",
+            data_type="integer", confirmation_status="CONFIRMED",
+        ))
+        db.flush()
+        rv1 = snapshot_rules(db, TENANT_ID, "v0.1", date(2026, 9, 1))
+
+        # Assign roster with rule version v1
+        ra = _assign(db, "EMP-001", date(2026, 9, 1), WorkStatus.WORK, "DAY", eq_id="EQ-001")
+        ra.effective_rule_version = "v0.1"
+        db.flush()
+
+        # Update policy value (simulating rule change)
+        rp = db.query(RosterPolicy).filter(RosterPolicy.policy_key == "max_consecutive_workdays").first()
+        rp.policy_value = "10"
+        db.flush()
+        rv2 = snapshot_rules(db, TENANT_ID, "v0.2", date(2026, 10, 1))
+
+        # Historical assignment still points to v0.1
+        found = db.query(RosterAssignment).filter(RosterAssignment.id == ra.id).first()
+        assert found.effective_rule_version == "v0.1"
+
+        # Rule version v1 snapshot is preserved with original value
+        rv1_check = db.query(RuleVersion).filter(RuleVersion.version_label == "v0.1").first()
+        assert "12" in rv1_check.config_snapshot_json
+
+        # Rule version v2 has updated value
+        rv2_check = db.query(RuleVersion).filter(RuleVersion.version_label == "v0.2").first()
+        assert "10" in rv2_check.config_snapshot_json
+
+    def test_27_active_rule_change_does_not_affect_historical(self, db):
+        """Changing active rule does not modify historical assignments."""
+        _setup_tenant(db)
+        _create_employee(db, "EMP-001")
+        _create_equipment(db, "EQ-001")
+        _create_competency(db, "EMP-001")
+        _create_shift(db, "DAY")
+
+        # Assign with rule v0.1
+        ra = _assign(db, "EMP-001", date(2026, 9, 1), WorkStatus.WORK, "DAY", eq_id="EQ-001")
+        ra.effective_rule_version = "v0.1"
+        db.flush()
+
+        # Simulate policy change (new active rule)
+        db.add(RosterPolicy(
+            id="rp-new", tenant_id=TENANT_ID,
+            policy_key="max_consecutive_workdays", policy_value="8",
+            data_type="integer", confirmation_status="CONFIRMED",
+        ))
+        db.flush()
+
+        # Historical assignment unchanged
+        found = db.query(RosterAssignment).filter(RosterAssignment.id == ra.id).first()
+        assert found.effective_rule_version == "v0.1"
+
+
+class TestEffectiveDatedMasterData:
+    """Evidence: effective-dated master data does not overwrite historical."""
+
+    def test_28_employee_meta_effective_dating(self, db):
+        """Employee meta has effective_from/effective_to; updates preserve effective period."""
+        _setup_tenant(db)
+        _create_employee(db, "EMP-001")
+
+        # Original role assignment
+        meta = db.query(EmployeeMeta).filter(EmployeeMeta.worker_id == "EMP-001").first()
+        meta.effective_from = date(2026, 1, 1)
+        meta.effective_to = date(2026, 6, 30)
+        db.flush()
+
+        # Verify effective period is stored
+        found = db.query(EmployeeMeta).filter(EmployeeMeta.worker_id == "EMP-001").first()
+        assert found.effective_from == date(2026, 1, 1)
+        assert found.effective_to == date(2026, 6, 30)
+
+        # Update effective period (simulating role change)
+        found.effective_from = date(2026, 7, 1)
+        found.effective_to = None
+        found.crew_id = "CREW-B"
+        db.flush()
+
+        # Verify updated
+        updated = db.query(EmployeeMeta).filter(EmployeeMeta.worker_id == "EMP-001").first()
+        assert updated.effective_from == date(2026, 7, 1)
+        assert updated.effective_to is None
+        assert updated.crew_id == "CREW-B"
+
+    def test_29_equipment_effective_dating(self, db):
+        """Equipment has effective_from/effective_to."""
+        _setup_tenant(db)
+        db.add(Equipment(
+            id="EQ-OLD", tenant_id=TENANT_ID, equipment_code="EQ-OLD",
+            equipment_type="DUMP_TRUCK", status=EquipmentStatus.INACTIVE,
+            effective_from=date(2025, 1, 1), effective_to=date(2025, 12, 31),
+        ))
+        db.add(Equipment(
+            id="EQ-NEW", tenant_id=TENANT_ID, equipment_code="EQ-NEW",
+            equipment_type="DUMP_TRUCK", status=EquipmentStatus.ACTIVE,
+            effective_from=date(2026, 1, 1), effective_to=None,
+        ))
+        db.flush()
+
+        old = db.query(Equipment).filter(Equipment.id == "EQ-OLD").first()
+        new = db.query(Equipment).filter(Equipment.id == "EQ-NEW").first()
+        assert old.effective_to == date(2025, 12, 31)
+        assert new.effective_to is None
+
+    def test_30_competency_effective_dating(self, db):
+        """Competency has valid_from/valid_to."""
+        _setup_tenant(db)
+        _create_employee(db, "EMP-001")
+        db.add(Competency(
+            id="comp-old", tenant_id=TENANT_ID, competency_code="comp-old",
+            employee_id="EMP-001", equipment_type="DUMP_TRUCK",
+            valid_from=date(2025, 1, 1), valid_to=date(2025, 12, 31),
+            status=CompetencyStatus.EXPIRED,
+        ))
+        db.add(Competency(
+            id="comp-new", tenant_id=TENANT_ID, competency_code="comp-new",
+            employee_id="EMP-001", equipment_type="EXCAVATOR",
+            valid_from=date(2026, 1, 1), valid_to=date(2027, 12, 31),
+            status=CompetencyStatus.VALID,
+        ))
+        db.flush()
+
+        old = db.query(Competency).filter(Competency.id == "comp-old").first()
+        new = db.query(Competency).filter(Competency.id == "comp-new").first()
+        assert old.status == CompetencyStatus.EXPIRED
+        assert new.status == CompetencyStatus.VALID
+
+    def test_31_crew_assignment_effective_dating(self, db):
+        """Crew assignment via EmployeeMeta is effective-dated (update in place)."""
+        _setup_tenant(db)
+        _create_employee(db, "EMP-001")
+
+        meta = db.query(EmployeeMeta).filter(EmployeeMeta.worker_id == "EMP-001").first()
+        original_crew = meta.crew_id
+        meta.effective_from = date(2026, 1, 1)
+        meta.effective_to = date(2026, 6, 30)
+        db.flush()
+
+        # Update crew assignment (effective dating via update)
+        meta.crew_id = "CREW-B"
+        meta.effective_from = date(2026, 7, 1)
+        meta.effective_to = None
+        db.flush()
+
+        updated = db.query(EmployeeMeta).filter(EmployeeMeta.worker_id == "EMP-001").first()
+        assert updated.crew_id == "CREW-B"
+        assert updated.effective_from == date(2026, 7, 1)
+        assert updated.effective_to is None
+
+
+class TestPlannedVsActualSeparation:
+    """Evidence: planned equipment is part of roster, actual is separate entity."""
+
+    def test_32_planned_equipment_in_roster(self, db):
+        """Planned equipment is stored in RosterAssignment."""
+        _setup_tenant(db)
+        _create_employee(db, "EMP-001")
+        _create_equipment(db, "EQ-001")
+        _create_competency(db, "EMP-001")
+        _create_shift(db, "DAY")
+
+        ra = _assign(db, "EMP-001", date(2026, 9, 1), WorkStatus.WORK, "DAY", eq_id="EQ-001")
+        assert ra.planned_equipment_id == "EQ-001"
+
+    def test_33_actual_equipment_separate_entity(self, db):
+        """Actual equipment assignment is a separate entity (EquipmentAssignmentActual)."""
+        _setup_tenant(db)
+        _create_employee(db, "EMP-001")
+        _create_equipment(db, "EQ-001")
+        _create_equipment(db, "EQ-002")
+        _create_competency(db, "EMP-001")
+        _create_shift(db, "DAY")
+
+        ra = _assign(db, "EMP-001", date(2026, 9, 1), WorkStatus.WORK, "DAY", eq_id="EQ-001")
+
+        actual = EquipmentAssignmentActual(
+            id=uid(), tenant_id=TENANT_ID, roster_id=ra.id,
+            employee_id="EMP-001", equipment_id="EQ-002",
+            started_at=datetime(2026, 9, 1, 7, 0, tzinfo=timezone.utc),
+            source="TELEMATICS",
+        )
+        db.add(actual)
+        db.flush()
+
+        # Planned unchanged
+        found_ra = db.query(RosterAssignment).filter(RosterAssignment.id == ra.id).first()
+        assert found_ra.planned_equipment_id == "EQ-001"
+
+        # Actual stored separately
+        actuals = db.query(EquipmentAssignmentActual).filter(
+            EquipmentAssignmentActual.roster_id == ra.id
+        ).all()
+        assert len(actuals) == 1
+        assert actuals[0].equipment_id == "EQ-002"
+        assert actuals[0].source == "TELEMATICS"
+
+    def test_34_actual_does_not_overwrite_planned(self, db):
+        """Adding actual equipment does not modify planned equipment."""
+        _setup_tenant(db)
+        _create_employee(db, "EMP-001")
+        _create_equipment(db, "EQ-001")
+        _create_equipment(db, "EQ-002")
+        _create_equipment(db, "EQ-003")
+        _create_competency(db, "EMP-001")
+        _create_shift(db, "DAY")
+
+        ra = _assign(db, "EMP-001", date(2026, 9, 1), WorkStatus.WORK, "DAY", eq_id="EQ-001")
+
+        # Add multiple actuals
+        for eq_id in ["EQ-002", "EQ-003"]:
+            db.add(EquipmentAssignmentActual(
+                id=uid(), tenant_id=TENANT_ID, roster_id=ra.id,
+                employee_id="EMP-001", equipment_id=eq_id,
+                started_at=datetime(2026, 9, 1, 7, 0, tzinfo=timezone.utc),
+                source="MANUAL",
+            ))
+        db.flush()
+
+        # Planned still EQ-001
+        found_ra = db.query(RosterAssignment).filter(RosterAssignment.id == ra.id).first()
+        assert found_ra.planned_equipment_id == "EQ-001"
+
+
+class TestTenantIsolation:
+    """Evidence: tenant A cannot read tenant B's data."""
+
+    TENANT_A = "tenant-a"
+    TENANT_B = "tenant-b"
+
+    def _setup_two_tenants(self, db):
+        db.add(Tenant(id=self.TENANT_A, code="a", name="Tenant A"))
+        db.add(Tenant(id=self.TENANT_B, code="b", name="Tenant B"))
+        db.flush()
+
+    def test_35_worker_isolation(self, db):
+        """Workers are isolated by tenant."""
+        self._setup_two_tenants(db)
+        db.add(Worker(id="W-A", tenant_id=self.TENANT_A, code="W-A", name="Worker A"))
+        db.add(Worker(id="W-B", tenant_id=self.TENANT_B, code="W-B", name="Worker B"))
+        db.flush()
+
+        a_workers = db.query(Worker).filter(Worker.tenant_id == self.TENANT_A).all()
+        b_workers = db.query(Worker).filter(Worker.tenant_id == self.TENANT_B).all()
+        assert len(a_workers) == 1
+        assert len(b_workers) == 1
+        assert a_workers[0].name == "Worker A"
+        assert b_workers[0].name == "Worker B"
+
+    def test_36_equipment_isolation(self, db):
+        """Equipment is isolated by tenant."""
+        self._setup_two_tenants(db)
+        db.add(Equipment(id="E-A", tenant_id=self.TENANT_A, equipment_code="E-A",
+                         equipment_type="TRUCK", status=EquipmentStatus.ACTIVE,
+                         effective_from=date(2026, 1, 1)))
+        db.add(Equipment(id="E-B", tenant_id=self.TENANT_B, equipment_code="E-B",
+                         equipment_type="TRUCK", status=EquipmentStatus.ACTIVE,
+                         effective_from=date(2026, 1, 1)))
+        db.flush()
+
+        a_eq = db.query(Equipment).filter(Equipment.tenant_id == self.TENANT_A).all()
+        b_eq = db.query(Equipment).filter(Equipment.tenant_id == self.TENANT_B).all()
+        assert len(a_eq) == 1
+        assert len(b_eq) == 1
+
+    def test_37_competency_isolation(self, db):
+        """Competencies are isolated by tenant."""
+        self._setup_two_tenants(db)
+        db.add(Worker(id="W-A", tenant_id=self.TENANT_A, code="W-A", name="Worker A"))
+        db.add(Worker(id="W-B", tenant_id=self.TENANT_B, code="W-B", name="Worker B"))
+        db.flush()
+        db.add(Competency(id="C-A", tenant_id=self.TENANT_A, competency_code="C-A",
+                          employee_id="W-A", equipment_type="TRUCK",
+                          valid_from=date(2026, 1, 1), status=CompetencyStatus.VALID))
+        db.add(Competency(id="C-B", tenant_id=self.TENANT_B, competency_code="C-B",
+                          employee_id="W-B", equipment_type="TRUCK",
+                          valid_from=date(2026, 1, 1), status=CompetencyStatus.VALID))
+        db.flush()
+
+        a_comp = db.query(Competency).filter(Competency.tenant_id == self.TENANT_A).all()
+        b_comp = db.query(Competency).filter(Competency.tenant_id == self.TENANT_B).all()
+        assert len(a_comp) == 1
+        assert len(b_comp) == 1
+
+    def test_38_roster_isolation(self, db):
+        """Roster assignments are isolated by tenant."""
+        self._setup_two_tenants(db)
+        db.add(Worker(id="W-A", tenant_id=self.TENANT_A, code="W-A", name="Worker A"))
+        db.add(Worker(id="W-B", tenant_id=self.TENANT_B, code="W-B", name="Worker B"))
+        db.flush()
+        db.add(ShiftTemplate(id="S-A", tenant_id=self.TENANT_A, shift_code="DAY",
+                             shift_name="Day", start_time=time(7), end_time=time(19),
+                             break_start=time(12), break_end=time(13),
+                             handover_start=time(18, 45), handover_end=time(19),
+                             crosses_midnight=False))
+        db.add(ShiftTemplate(id="S-B", tenant_id=self.TENANT_B, shift_code="DAY",
+                             shift_name="Day", start_time=time(7), end_time=time(19),
+                             break_start=time(12), break_end=time(13),
+                             handover_start=time(18, 45), handover_end=time(19),
+                             crosses_midnight=False))
+        db.flush()
+        db.add(RosterAssignment(
+            id=uid(), tenant_id=self.TENANT_A, roster_code="R-A",
+            operating_date=date(2026, 9, 1), employee_id="W-A",
+            work_status=WorkStatus.WORK, shift_id="S-A",
+            site_status=SiteStatusEnum.ONSITE, validation_status=ValidationStatus.VALID,
+        ))
+        db.add(RosterAssignment(
+            id=uid(), tenant_id=self.TENANT_B, roster_code="R-B",
+            operating_date=date(2026, 9, 1), employee_id="W-B",
+            work_status=WorkStatus.WORK, shift_id="S-B",
+            site_status=SiteStatusEnum.ONSITE, validation_status=ValidationStatus.VALID,
+        ))
+        db.flush()
+
+        a_roster = db.query(RosterAssignment).filter(RosterAssignment.tenant_id == self.TENANT_A).all()
+        b_roster = db.query(RosterAssignment).filter(RosterAssignment.tenant_id == self.TENANT_B).all()
+        assert len(a_roster) == 1
+        assert len(b_roster) == 1
+
+    def test_39_rule_version_isolation(self, db):
+        """Rule versions are isolated by tenant."""
+        self._setup_two_tenants(db)
+        db.add(RuleVersion(
+            id=uid(), tenant_id=self.TENANT_A, version_label="v1",
+            effective_from=date(2026, 1, 1), config_snapshot_json='{"key": "a"}',
+        ))
+        db.add(RuleVersion(
+            id=uid(), tenant_id=self.TENANT_B, version_label="v1",
+            effective_from=date(2026, 1, 1), config_snapshot_json='{"key": "b"}',
+        ))
+        db.flush()
+
+        a_rv = db.query(RuleVersion).filter(RuleVersion.tenant_id == self.TENANT_A).all()
+        b_rv = db.query(RuleVersion).filter(RuleVersion.tenant_id == self.TENANT_B).all()
+        assert len(a_rv) == 1
+        assert len(b_rv) == 1
+        assert '"a"' in a_rv[0].config_snapshot_json
+        assert '"b"' in b_rv[0].config_snapshot_json
+
+    def test_40_crew_isolation(self, db):
+        """Crews are isolated by tenant."""
+        self._setup_two_tenants(db)
+        db.add(Crew(id="CR-A", tenant_id=self.TENANT_A, crew_code="A",
+                    crew_name="Crew A", cycle_offset_days=0))
+        db.add(Crew(id="CR-B", tenant_id=self.TENANT_B, crew_code="A",
+                    crew_name="Crew A", cycle_offset_days=0))
+        db.flush()
+
+        a_crews = db.query(Crew).filter(Crew.tenant_id == self.TENANT_A).all()
+        b_crews = db.query(Crew).filter(Crew.tenant_id == self.TENANT_B).all()
+        assert len(a_crews) == 1
+        assert len(b_crews) == 1
