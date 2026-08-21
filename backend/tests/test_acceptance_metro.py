@@ -591,6 +591,7 @@ class TestDataAudit:
         actual = EquipmentAssignmentActual(
             id=uid(), tenant_id=TENANT_ID, roster_id=ra.id,
             employee_id="EMP-001", equipment_id="EQ-002",
+            operating_date=date(2026, 9, 1),
             started_at=datetime(2026, 9, 1, 7, 0, tzinfo=timezone.utc),
             source="MANUAL",
         )
@@ -806,6 +807,7 @@ class TestPlannedVsActualSeparation:
         actual = EquipmentAssignmentActual(
             id=uid(), tenant_id=TENANT_ID, roster_id=ra.id,
             employee_id="EMP-001", equipment_id="EQ-002",
+            operating_date=date(2026, 9, 1),
             started_at=datetime(2026, 9, 1, 7, 0, tzinfo=timezone.utc),
             source="TELEMATICS",
         )
@@ -841,6 +843,7 @@ class TestPlannedVsActualSeparation:
             db.add(EquipmentAssignmentActual(
                 id=uid(), tenant_id=TENANT_ID, roster_id=ra.id,
                 employee_id="EMP-001", equipment_id=eq_id,
+                operating_date=date(2026, 9, 1),
                 started_at=datetime(2026, 9, 1, 7, 0, tzinfo=timezone.utc),
                 source="MANUAL",
             ))

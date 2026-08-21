@@ -417,6 +417,30 @@ def _flush_roster(db: Session, rows: list, counts: dict, rule_version_id: str | 
         ))
     db.flush()
 
+    # 10. Tenant Capabilities (RosterPolicy)
+    # Metro Mining: equipment assignment + competency validation enabled
+    capability_policies = {
+        "equipment_assignment_enabled": ("true", "boolean", "CONFIRMED",
+            "Metro Mining tracks planned vs actual equipment assignment"),
+        "competency_validation_enabled": ("true", "boolean", "CONFIRMED",
+            "Metro Mining validates operator competency for equipment types"),
+    }
+    for key, (val, dtype, status, notes) in capability_policies.items():
+        if not db.query(RosterPolicy).filter(
+            RosterPolicy.tenant_id == TENANT_ID,
+            RosterPolicy.policy_key == key,
+        ).first():
+            db.add(RosterPolicy(
+                id=f"rp-cap-{key}",
+                tenant_id=TENANT_ID,
+                policy_key=key,
+                policy_value=val,
+                data_type=dtype,
+                confirmation_status=status,
+                notes=notes,
+            ))
+    db.flush()
+
 
 def main():
     settings = get_settings()

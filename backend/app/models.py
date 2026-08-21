@@ -434,22 +434,133 @@ class RosterAssignment(Base):
     validation_status: Mapped[ValidationStatus] = mapped_column(Enum(ValidationStatus), default=ValidationStatus.DRAFT)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
+# ─────────────────────────────────────────────────────────────
+# M2C: Planned vs Actual Equipment Assignment
+# ─────────────────────────────────────────────────────────────
+
+class ActualAssignmentStatus(str, enum.Enum):
+    ACTIVE = "ACTIVE"
+    CLOSED = "CLOSED"
+    SUPERSEDED = "SUPERSEDED"
+    CANCELLED = "CANCELLED"
+
+class ComparisonResult(str, enum.Enum):
+    MATCH = "MATCH"
+    MISMATCH = "MISMATCH"
+    NO_PLANNED_EQUIPMENT = "NO_PLANNED_EQUIPMENT"
+    NO_ACTUAL_EQUIPMENT = "NO_ACTUAL_EQUIPMENT"
+    CONFIG_INCOMPLETE = "CONFIG_INCOMPLETE"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+class DiscrepancyType(str, enum.Enum):
+    EQUIPMENT_MISMATCH = "EQUIPMENT_MISMATCH"
+    OPERATOR_SUBSTITUTION = "OPERATOR_SUBSTITUTION"
+    NO_PLANNED = "NO_PLANNED"
+    NO_ACTUAL = "NO_ACTUAL"
+    COMPETENCY_INVALID = "COMPETENCY_INVALID"
+    EQUIPMENT_UNAVAILABLE = "EQUIPMENT_UNAVAILABLE"
+
+class DiscrepancyStatus(str, enum.Enum):
+    OPEN = "OPEN"
+    PENDING_REVIEW = "PENDING_REVIEW"
+    ACKNOWLEDGED = "ACKNOWLEDGED"
+    RESOLVED = "RESOLVED"
+    WAIVED = "WAIVED"
+
 class EquipmentAssignmentActual(Base):
+    """Actual equipment assignment with interval tracking.
+    One operator can have multiple assignments in a shift (equipment change).
+    One equipment can have multiple operators across shifts (not overlapping).
+    ACTUAL MUST NEVER OVERWRITE PLANNED.
+    """
     __tablename__ = "equipment_assignments_actual"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "employee_id", "equipment_id", "started_at", name="uq_actual_assignment_identity"),
+        Index("ix_actual_assignment_tenant_date", "tenant_id", "operating_date"),
+        Index("ix_actual_assignment_employee", "tenant_id", "employee_id", "operating_date"),
+        Index("ix_actual_assignment_equipment", "tenant_id", "equipment_id", "operating_date"),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     roster_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("roster_assignments.id"), nullable=True, index=True)
     employee_id: Mapped[str] = mapped_column(String(36), index=True)
     equipment_id: Mapped[str] = mapped_column(String(36), ForeignKey("equipments.id"), index=True)
+    operating_date: Mapped[date] = mapped_column(Date)
+    shift_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("shift_templates.id"), nullable=True)
+    site_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sites.id"), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     source: Mapped[str] = mapped_column(String(50), default="MANUAL")
+    canonical_event_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("canonical_attendance_events.id"), nullable=True)
     supervisor_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[ActualAssignmentStatus] = mapped_column(Enum(ActualAssignmentStatus), default=ActualAssignmentStatus.ACTIVE)
+    rule_version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("rule_versions.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 class ExceptionSeverity(str, enum.Enum):
     CRITICAL = "CRITICAL"
     WARNING = "WARNING"
     INFO = "INFO"
+
+
+class EquipmentComparisonResult(Base):
+    """Result of comparing planned vs actual equipment assignment.
+    One per actual assignment event. Idempotent.
+    """
+    __tablename__ = "equipment_comparison_results"
+    __table_args__ = (
+        UniqueConstraint("actual_assignment_id", name="uq_comparison_actual"),
+        Index("ix_comparison_tenant_date", "tenant_id", "operating_date"),
+        Index("ix_comparison_employee", "tenant_id", "employee_id", "operating_date"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    actual_assignment_id: Mapped[str] = mapped_column(String(36), ForeignKey("equipment_assignments_actual.id"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(36), index=True)
+    operating_date: Mapped[date] = mapped_column(Date)
+    shift_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("shift_templates.id"), nullable=True)
+    planned_equipment_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("equipments.id"), nullable=True)
+    actual_equipment_id: Mapped[str] = mapped_column(String(36), ForeignKey("equipments.id"))
+    comparison_result: Mapped[ComparisonResult] = mapped_column(Enum(ComparisonResult))
+    planned_worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actual_worker_id: Mapped[str] = mapped_column(String(36))
+    reason_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    rule_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class EquipmentDiscrepancy(Base):
+    """Discrepancy/substitution candidate from planned vs actual mismatch.
+    Created when comparison detects MISMATCH, operator substitution, or other anomaly.
+    Full supervisor approval belongs to MM-M3.
+    """
+    __tablename__ = "equipment_discrepancies"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "actual_assignment_id", "discrepancy_type", name="uq_discrepancy_assignment_type"),
+        Index("ix_discrepancy_tenant_date", "tenant_id", "operating_date"),
+        Index("ix_discrepancy_employee", "tenant_id", "employee_id", "operating_date"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    actual_assignment_id: Mapped[str] = mapped_column(String(36), ForeignKey("equipment_assignments_actual.id"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(36), index=True)
+    operating_date: Mapped[date] = mapped_column(Date)
+    shift_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("shift_templates.id"), nullable=True)
+    planned_equipment_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("equipments.id"), nullable=True)
+    actual_equipment_id: Mapped[str] = mapped_column(String(36), ForeignKey("equipments.id"))
+    planned_worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actual_worker_id: Mapped[str] = mapped_column(String(36))
+    discrepancy_type: Mapped[DiscrepancyType] = mapped_column(Enum(DiscrepancyType))
+    detected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    source: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    canonical_event_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    status: Mapped[DiscrepancyStatus] = mapped_column(Enum(DiscrepancyStatus), default=DiscrepancyStatus.OPEN)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    supervisor_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rule_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 class ExceptionStatus(str, enum.Enum):
     OPEN = "OPEN"
