@@ -348,15 +348,25 @@ class ShiftTemplate(Base):
 
 class CheckpointPolicy(Base):
     __tablename__ = "checkpoint_policies"
-    __table_args__ = (UniqueConstraint("tenant_id", "checkpoint_type", "shift_id", name="uq_checkpoint_shift"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "checkpoint_type", "shift_id", name="uq_checkpoint_shift"),
+        Index("ix_checkpoint_policy_tenant", "tenant_id", "enabled"),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     checkpoint_type: Mapped[str] = mapped_column(String(80))
     shift_id: Mapped[str] = mapped_column(String(36), ForeignKey("shift_templates.id"), index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    sequence_order: Mapped[int] = mapped_column(Integer, default=0)
     window_start_offset_min: Mapped[int] = mapped_column(Integer, default=0)
     window_end_offset_min: Mapped[int] = mapped_column(Integer, default=0)
+    tolerance_min: Mapped[int | None] = mapped_column(Integer, nullable=True)
     required_evidence: Mapped[str | None] = mapped_column(String(200), nullable=True)
     severity: Mapped[str] = mapped_column(String(20), default="WARNING")
+    default_validation_behavior: Mapped[str] = mapped_column(String(30), default="CONFIG_INCOMPLETE")
+    effective_from: Mapped[date] = mapped_column(Date, default=date(2026, 1, 1))
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+    rule_version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("rule_versions.id"), nullable=True, index=True)
 
 class RosterPolicy(Base):
     __tablename__ = "roster_policies"
@@ -588,4 +598,85 @@ class CanonicalAttendanceEvent(Base):
         String(36), ForeignKey("attendance_events.id"), nullable=True
     )
     evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ─────────────────────────────────────────────────────────────
+# M2B: Checkpoint Engine
+# Generic checkpoint validation for all tenants.
+# ─────────────────────────────────────────────────────────────
+
+class CheckpointValidationStatus(str, enum.Enum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    CONFIG_INCOMPLETE = "CONFIG_INCOMPLETE"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    BLOCKED_POLICY_DECISION = "BLOCKED_POLICY_DECISION"
+
+
+class CheckpointEventMapping(Base):
+    """Config-driven mapping: source event characteristics -> checkpoint type.
+    Allows each tenant to define how incoming events map to checkpoint types.
+    """
+    __tablename__ = "checkpoint_event_mappings"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "source", "event_type", name="uq_checkpoint_mapping"),
+        Index("ix_checkpoint_mapping_tenant", "tenant_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    source: Mapped[str] = mapped_column(String(80))
+    event_type: Mapped[str] = mapped_column(String(80))
+    checkpoint_type: Mapped[str] = mapped_column(String(80))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    effective_from: Mapped[date] = mapped_column(Date, default=date(2026, 1, 1))
+    effective_to: Mapped[date | None] = mapped_column(Date, nullable=True)
+
+
+class CheckpointValidationResult(Base):
+    """Result of checkpoint validation. One per canonical event + checkpoint type.
+    Idempotent: same canonical_event_id + checkpoint_type -> same result.
+    """
+    __tablename__ = "checkpoint_validation_results"
+    __table_args__ = (
+        UniqueConstraint("canonical_event_id", "checkpoint_type", name="uq_checkpoint_result_event_type"),
+        Index("ix_checkpoint_result_tenant_date", "tenant_id", "operating_date"),
+        Index("ix_checkpoint_result_employee", "tenant_id", "employee_id", "operating_date"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    canonical_event_id: Mapped[str] = mapped_column(String(36), ForeignKey("canonical_attendance_events.id"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(36), index=True)
+    checkpoint_type: Mapped[str] = mapped_column(String(80))
+    operating_date: Mapped[date] = mapped_column(Date)
+    shift_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("shift_templates.id"), nullable=True)
+    policy_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("checkpoint_policies.id"), nullable=True)
+    rule_version_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    validation_status: Mapped[CheckpointValidationStatus] = mapped_column(Enum(CheckpointValidationStatus))
+    detected_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    reason_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+class MissingCheckpointResult(Base):
+    """Expected checkpoint that did not arrive. Generated by missing checkpoint detection.
+    Only for WORK status employees with applicable checkpoint policies.
+    """
+    __tablename__ = "missing_checkpoint_results"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "employee_id", "operating_date", "checkpoint_type", name="uq_missing_checkpoint"),
+        Index("ix_missing_checkpoint_tenant_date", "tenant_id", "operating_date"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(36), index=True)
+    operating_date: Mapped[date] = mapped_column(Date)
+    shift_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("shift_templates.id"), nullable=True)
+    checkpoint_type: Mapped[str] = mapped_column(String(80))
+    policy_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("checkpoint_policies.id"), nullable=True)
+    expected_window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expected_window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detection_status: Mapped[str] = mapped_column(String(30), default="MISSING")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
