@@ -10,8 +10,16 @@ from app.models import RuleVersion, RosterPolicy, CheckpointPolicy, ShiftTemplat
 def snapshot_rules(db: Session, tenant_id: str, version_label: str, effective_from: date) -> RuleVersion:
     """
     Capture current rule state (policies, checkpoints, shifts) into a RuleVersion row.
-    Returns the created RuleVersion.
+    Returns the created (or existing) RuleVersion.
+    Idempotent: if version_label already exists for this tenant, returns existing.
     """
+    existing = db.query(RuleVersion).filter(
+        RuleVersion.tenant_id == tenant_id,
+        RuleVersion.version_label == version_label,
+    ).first()
+    if existing:
+        return existing
+
     # Gather current config
     policies = db.query(RosterPolicy).filter(RosterPolicy.tenant_id == tenant_id).all()
     checkpoints = db.query(CheckpointPolicy).filter(CheckpointPolicy.tenant_id == tenant_id).all()

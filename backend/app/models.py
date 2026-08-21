@@ -261,7 +261,7 @@ class Site(Base):
     site_type: Mapped[SiteType] = mapped_column(Enum(SiteType))
     latitude: Mapped[float | None] = mapped_column(Float, nullable=True)
     longitude: Mapped[float | None] = mapped_column(Float, nullable=True)
-    radius_m: Mapped[int] = mapped_column(Integer, default=150)
+    radius_m: Mapped[int | None] = mapped_column(Integer, nullable=True)  # TBC until geofence data provided
     timezone: Mapped[str] = mapped_column(String(80), default="Asia/Jakarta")
     status: Mapped[SiteStatus] = mapped_column(Enum(SiteStatus), default=SiteStatus.ACTIVE)
     effective_from: Mapped[date] = mapped_column(Date)
@@ -311,8 +311,14 @@ class CompetencyStatus(str, enum.Enum):
     SUSPENDED = "SUSPENDED"
 
 class Competency(Base):
+    """Employee competency/certification history.
+    Supports multiple records per employee+equipment_type (renewal, suspension, expiry).
+    """
     __tablename__ = "competencies"
-    __table_args__ = (UniqueConstraint("tenant_id", "employee_id", "equipment_type", name="uq_competency_emp_type"),)
+    __table_args__ = (
+        Index("ix_competency_emp_type", "tenant_id", "employee_id", "equipment_type"),
+        Index("ix_competency_tenant", "tenant_id"),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
     competency_code: Mapped[str] = mapped_column(String(50))
@@ -413,7 +419,8 @@ class RosterAssignment(Base):
     shift_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("shift_templates.id"), nullable=True)
     site_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("sites.id"), nullable=True)
     planned_equipment_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("equipments.id"), nullable=True)
-    effective_rule_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    rule_version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("rule_versions.id"), nullable=True, index=True)
+    effective_rule_version: Mapped[str | None] = mapped_column(String(100), nullable=True)  # display/snapshot label
     validation_status: Mapped[ValidationStatus] = mapped_column(Enum(ValidationStatus), default=ValidationStatus.DRAFT)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
@@ -469,12 +476,17 @@ class OverrideEvent(Base):
     approved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 class EmployeeMeta(Base):
-    """Extended worker metadata for mining operations (role, crew, lifecycle)."""
+    """Extended worker metadata for mining operations (role, crew, lifecycle).
+    Supports multiple effective periods per worker (effective-dated history).
+    """
     __tablename__ = "employee_meta"
-    __table_args__ = (UniqueConstraint("tenant_id", "worker_id", name="uq_employee_meta_worker"),)
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "worker_id", "effective_from", name="uq_employee_meta_worker_from"),
+        Index("ix_employee_meta_tenant_worker", "tenant_id", "worker_id"),
+    )
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
-    worker_id: Mapped[str] = mapped_column(ForeignKey("workers.id"), unique=True)
+    worker_id: Mapped[str] = mapped_column(ForeignKey("workers.id"), index=True)
     employee_no: Mapped[str | None] = mapped_column(String(50), nullable=True)
     role_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("roles.id"), nullable=True)
     crew_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("crews.id"), nullable=True)

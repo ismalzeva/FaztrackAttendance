@@ -96,10 +96,15 @@ def seed(db: Session) -> dict:
     # 1. Tenant
     tenant = db.query(Tenant).filter(Tenant.id == TENANT_ID).first()
     if not tenant:
-        tenant = Tenant(id=TENANT_ID, code=TENANT_CODE, name="Metro Mining")
+        tenant = Tenant(id=TENANT_ID, code=TENANT_CODE, name="Metro Mining", timezone="Asia/Makassar")
         db.add(tenant)
         db.flush()
     counts["tenant"] = 1
+
+    # 1b. Ensure tenant timezone
+    if tenant.timezone != "Asia/Makassar":
+        tenant.timezone = "Asia/Makassar"
+        db.flush()
 
     # 2. Admin user
     admin = db.query(User).filter(User.id == ADMIN_USER_ID).first()
@@ -156,13 +161,21 @@ def seed(db: Session) -> dict:
                 site_type=SiteType(site_type_str),
                 latitude=float(lat) if lat and str(lat).upper() != "TBC" else None,
                 longitude=float(lon) if lon and str(lon).upper() != "TBC" else None,
-                radius_m=int(float(radius)) if radius and str(radius).upper() != "TBC" else 150,
+                radius_m=int(float(radius)) if radius and str(radius).upper() not in ("TBC", "DUMMY", "SIMULATION") else None,
                 status=SiteStatus.ACTIVE,
                 effective_from=date(2026, 9, 1),
-                notes=_clean_str(row[8]),
+                notes=f"[SIMULATION/NON_PRODUCTION] {_clean_str(row[8]) or 'Geofence data TBC'}",
             ))
             site_count += 1
     counts["sites"] = site_count
+
+    # 4b. Set site timezone + geofence TBC
+    for site in db.query(Site).filter(Site.tenant_id == TENANT_ID).all():
+        site.timezone = "Asia/Makassar"
+        site.radius_m = None  # TBC until geofence data provided
+        if site.notes and "[SIMULATION" not in (site.notes or ""):
+            site.notes = f"[SIMULATION/NON_PRODUCTION] {site.notes or 'Geofence data TBC'}"
+    db.flush()
 
     # 5. Shifts
     ws = wb["Shifts & Checkpoints"]
@@ -337,6 +350,10 @@ def seed(db: Session) -> dict:
             comp_count += 1
     counts["competencies"] = comp_count
 
+    # 13. Snapshot rules (BEFORE roster so we have rule_version_id)
+    rv = snapshot_rules(db, TENANT_ID, "METRO-RULE-v0.1", date(2026, 9, 1))
+    counts["rule_version"] = 1
+
     # 12. Roster Simulation
     ws = wb["Roster Simulation"]
     roster_count = 0
@@ -347,23 +364,28 @@ def seed(db: Session) -> dict:
             continue
         batch.append(row)
         if len(batch) >= 500:
-            _flush_roster(db, batch, counts)
+            _flush_roster(db, batch, counts, rule_version_id=rv.id)
             roster_count += len(batch)
             batch = []
     if batch:
-        _flush_roster(db, batch, counts)
+        _flush_roster(db, batch, counts, rule_version_id=rv.id)
         roster_count += len(batch)
     counts["roster_total"] = roster_count
 
-    # 13. Snapshot rules
-    rv = snapshot_rules(db, TENANT_ID, "METRO-RULE-v0.1", date(2026, 9, 1))
-    counts["rule_version"] = 1
+    # 14. Backfill rule_version_id on existing roster if missing
+    if rv:
+        updated = db.query(RosterAssignment).filter(
+            RosterAssignment.tenant_id == TENANT_ID,
+            RosterAssignment.rule_version_id == None,
+        ).update({RosterAssignment.rule_version_id: rv.id})
+        if updated:
+            counts["roster_backfill_rv"] = updated
 
     db.commit()
     return counts
 
 
-def _flush_roster(db: Session, rows: list, counts: dict):
+def _flush_roster(db: Session, rows: list, counts: dict, rule_version_id: str | None = None):
     """Insert a batch of roster rows."""
     for row in rows:
         rid = _clean_str(row[0])
@@ -389,6 +411,7 @@ def _flush_roster(db: Session, rows: list, counts: dict):
             shift_id=_clean_str(row[7]),
             site_id=_clean_str(row[8]),
             planned_equipment_id=_clean_str(row[9]),
+            rule_version_id=rule_version_id,
             effective_rule_version=_clean_str(row[10]),
             validation_status=ValidationStatus(_clean_str(row[11]) or "VALID"),
         ))
