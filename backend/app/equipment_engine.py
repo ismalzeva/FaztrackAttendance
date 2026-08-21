@@ -400,6 +400,15 @@ def compare_planned_vs_actual(
     Creates comparison result. Idempotent via unique constraint on actual_assignment_id.
     ACTUAL MUST NEVER OVERWRITE PLANNED.
     """
+    # Idempotency: check for existing comparison for this actual assignment
+    existing = db.scalar(
+        select(EquipmentComparisonResult).where(
+            EquipmentComparisonResult.actual_assignment_id == actual_assignment.id,
+        )
+    )
+    if existing:
+        return existing
+    
     tenant_id = actual_assignment.tenant_id
     employee_id = actual_assignment.employee_id
     operating_date = actual_assignment.operating_date

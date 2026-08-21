@@ -2,7 +2,7 @@
 
 ## Permanent Architectural Decision
 
-**Effective:** 2026-08-21 (MM-M2C)
+**Effective:** 2026-08-21 (MM-M2C, reinforced MM-M2E)
 **Status:** PERMANENT — applies to all current and future Faztrack Attendance development
 
 ---
@@ -10,33 +10,161 @@
 ## 1. Core Principle
 
 ```
-SHARED CORE ENGINE
-+
-STRICTLY ISOLATED COMPANY CONFIGURATION
+FAZTRACK ATTENDANCE IS A MULTI-CLIENT PLATFORM.
+THE ENGINE IS SHARED.
+BUSINESS RULES ARE CLIENT-SPECIFIC.
 ```
 
-One shared reusable core repository. Each client/company (tenant) has completely isolated configuration, master data, policies, capabilities, rules, operational data, and tests.
+Each client is an isolated configuration and data cluster. No business-rule inheritance between clients unless explicitly configured. No cross-client fallback. No assumption that companies in the same industry share attendance rules. Client requirements are authoritative for that client's configured behavior, subject to technical integrity and approved safety/security constraints.
 
 ---
 
-## 2. Tenant Boundary
+## 2. Client-Cluster Architecture
 
-Every Faztrack Attendance client/company is an independent tenant boundary.
+```
+FAZTRACK ATTENDANCE CORE PLATFORM
+│
+├── CLIENT CLUSTER A
+│   ├── own master data
+│   ├── own configuration
+│   ├── own attendance rules
+│   ├── own shift rules
+│   ├── own roster rules
+│   ├── own checkpoint rules
+│   ├── own equipment rules
+│   ├── own competency rules
+│   ├── own geofence rules
+│   ├── own approval rules
+│   ├── own input mappings
+│   ├── own rule versions
+│   └── own operational data
+│
+├── CLIENT CLUSTER B
+│   └── completely independent business configuration
+│
+└── FUTURE CLIENT CLUSTERS
+    └── each independently configured
+```
 
-**Current tenants:**
-- Lumin Park
-- Metro Mining
+The platform provides reusable technical capabilities. Each client provides its own operational rulebook. **Do NOT assume that attendance rules should be standardized across clients.**
 
-**Future tenants:**
-- Client C
-- Client D
-- Any future client
+### 2.1 Shared Core (Technical Primitives)
 
-**No tenant may silently inherit another tenant's operational configuration.**
+The shared core provides generic technical capabilities:
+- Tenant isolation
+- Authentication
+- Event ingestion
+- Canonical event storage
+- Timezone-aware timestamps
+- Operating date resolution
+- Rule execution framework
+- Checkpoint framework
+- Equipment assignment framework
+- Audit trail
+- Idempotency
+- Effective dating
+- Configuration engine
+
+### 2.2 Client-Specific (Business Rules)
+
+Each client configures its own:
+- Attendance rules (tolerance, grace periods)
+- Shift rules (timing, breaks, handovers)
+- Roster rules (max consecutive days, streak limits)
+- Checkpoint rules (which checkpoints required, windows)
+- Equipment rules (assignment policies, competency requirements)
+- Geofence rules (coordinates, radius)
+- Approval rules (who can override, authorization levels)
+- Consequence rules (payroll, disciplinary, HSE)
+
+**No core change should be required when a new client configures different values.**
 
 ---
 
-## 3. What Each Tenant Owns
+## 3. Client-Cluster Boundary
+
+Each client cluster must independently own:
+
+| Category | Examples |
+|----------|----------|
+| Tenant configuration | timezone, geofence, shift/schedule |
+| Master data | employees, roles, crews, equipment, sites/locations |
+| Employee data | worker records, employment status |
+| Role data | job roles, skill requirements |
+| Crew data | team assignments, crew composition |
+| Equipment data | equipment catalog, status, maintenance |
+| Competency data | certifications, validity dates, equipment types |
+| Site/location data | site boundaries, timezone, geofence |
+| Timezone | site-specific timezone resolution |
+| Geofence | coordinates, radius, inclusion/exclusion zones |
+| Shift templates | timing, breaks, handovers |
+| Roster policies | max days, streak limits, cycle patterns |
+| Site-cycle policies | onsite/offsite duration |
+| Checkpoint policies | required checkpoints, windows, tolerance |
+| Attendance policies | late tolerance, early tolerance |
+| Rule versions | versioned configuration snapshots |
+| Capabilities | feature flags per tenant |
+| Source/input mappings | canonical input source mappings |
+| Canonical enrichment mappings | event → roster → equipment resolution |
+| Seed/simulation data | test data, pilot data |
+| Operational data | roster, actual assignments, checkpoint results, discrepancies |
+| Exception data | discrepancy candidates, resolution status |
+| Acceptance tests | tenant-specific test suites |
+
+**No cross-client fallback is allowed.**
+
+---
+
+## 4. No Cross-Client Fallback
+
+If a client's configuration is missing:
+
+**DO NOT:**
+- Read another tenant's configuration
+- Copy another client's default
+- Infer from another client's data
+- Use another company's policy because it exists
+- Silently apply a global business default
+
+**Instead:**
+- `CONFIG_INCOMPLETE` — when required configuration is missing
+- `BLOCKED_POLICY_DECISION` — when human decision is needed
+
+---
+
+## 5. Same Business Code Across Clients
+
+Technical isolation must support identical business codes across clients:
+
+```
+Metro Mining:   employee_no = OP-001
+Client B:       employee_no = OP-001
+
+Metro Mining:   equipment_code = EQ-001
+Client B:       equipment_code = EQ-001
+```
+
+These identical business codes must remain independently resolvable because tenant context is different. Internal PKs must remain unique according to schema design.
+
+---
+
+## 6. No Generalization of Client Rules
+
+**Never conclude:**
+- "Metro uses 12 days, therefore Faztrack Attendance uses 12 days."
+
+**Correct:**
+- "Metro Mining's current rule version uses 12 days."
+
+**Never conclude:**
+- "Mining companies use 12 weeks onsite / 2 weeks offsite."
+
+**Correct:**
+- "Metro Mining currently provided a 12-week onsite / 2-week offsite policy."
+
+Even another mining company may have completely different rules.
+
+---
 
 Each company must have its own:
 
