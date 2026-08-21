@@ -791,3 +791,79 @@ class MissingCheckpointResult(Base):
     expected_window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     detection_status: Mapped[str] = mapped_column(String(30), default="MISSING")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ─────────────────────────────────────────────────────────────
+# M2D: Operational Attendance Rule Engine
+# Generic rule evaluation for all tenants.
+# ─────────────────────────────────────────────────────────────
+
+class RuleEvaluationStatus(str, enum.Enum):
+    """Rule evaluation result status."""
+    PASS = "PASS"
+    FAIL = "FAIL"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+    CONFIG_INCOMPLETE = "CONFIG_INCOMPLETE"
+    BLOCKED_POLICY_DECISION = "BLOCKED_POLICY_DECISION"
+
+
+class RuleSeverity(str, enum.Enum):
+    """Rule violation severity. Does NOT imply disciplinary consequence."""
+    CRITICAL = "CRITICAL"
+    WARNING = "WARNING"
+    INFO = "INFO"
+
+
+class RuleEvaluation(Base):
+    """Generic rule evaluation result.
+    
+    One per (tenant_id, employee_id, operating_date, rule_code, rule_version_id, evidence_key).
+    Idempotent: same evidence + same rule + same rule version → same result.
+    
+    DETECTION is separate from HUMAN DECISION.
+    FAIL does NOT automatically mean employee misconduct.
+    """
+    __tablename__ = "rule_evaluations"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "employee_id", "operating_date", "rule_code",
+            "rule_version_id", "evidence_key",
+            name="uq_rule_eval_identity",
+        ),
+        Index("ix_rule_eval_tenant_date", "tenant_id", "operating_date"),
+        Index("ix_rule_eval_employee", "tenant_id", "employee_id", "operating_date"),
+        Index("ix_rule_eval_rule_code", "tenant_id", "rule_code"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    employee_id: Mapped[str] = mapped_column(String(36), index=True)
+    operating_date: Mapped[date] = mapped_column(Date)
+    shift_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("shift_templates.id"), nullable=True)
+    rule_code: Mapped[str] = mapped_column(String(80))
+    rule_version_id: Mapped[str | None] = mapped_column(String(36), ForeignKey("rule_versions.id"), nullable=True)
+    
+    # Source references (nullable — not all rules come from checkpoint/canonical)
+    source_checkpoint_result_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("checkpoint_validation_results.id"), nullable=True
+    )
+    source_canonical_event_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("canonical_attendance_events.id"), nullable=True
+    )
+    equipment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    
+    # Evaluation result
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    status: Mapped[RuleEvaluationStatus] = mapped_column(Enum(RuleEvaluationStatus))
+    severity: Mapped[RuleSeverity] = mapped_column(Enum(RuleSeverity), default=RuleSeverity.WARNING)
+    
+    # Evidence
+    actual_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    expected_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    evidence_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    
+    # Idempotency key: unique per evidence source + rule
+    evidence_key: Mapped[str] = mapped_column(String(200), default="")
+    
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
