@@ -18,6 +18,7 @@ from app.timesheets import router as timesheets_router
 from app.dashboard import router as dashboard_router
 from app.roster import router as roster_router
 from app.exceptions import router as exceptions_router
+from app.reports import router as reports_router
 
 settings=get_settings(); app=FastAPI(title="Faztrack Attendance API",version="0.1.0",docs_url="/docs" if settings.env!="production" else None)
 app.include_router(master_data_router)
@@ -27,6 +28,7 @@ app.include_router(timesheets_router)
 app.include_router(dashboard_router)
 app.include_router(roster_router)
 app.include_router(exceptions_router)
+app.include_router(reports_router)
 app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origins,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
 @app.middleware("http")
