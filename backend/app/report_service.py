@@ -494,7 +494,7 @@ def query_shift_attendance(db: Session, f: ReportFilter) -> list[ShiftAttendance
                 ec.operating_date,
                 ec.shift_id,
                 func.count(ec.id).label("cnt"),
-                func.group_concat(ec.exception_type, ",").label("types"),
+                func.string_agg(ec.exception_type, ",").label("types") if db.get_bind().dialect.name == "postgresql" else func.group_concat(ec.exception_type, ",").label("types"),
             )
             .filter(
                 ec.tenant_id == f.tenant_id,
