@@ -875,10 +875,14 @@ class RuleEvaluation(Base):
 # ─────────────────────────────────────────────────────────────
 
 class ExceptionActionType(str, enum.Enum):
-    """Allowed exception lifecycle actions."""
+    """Allowed exception lifecycle and review actions."""
     ACKNOWLEDGE = "ACKNOWLEDGE"
     RESOLVE = "RESOLVE"
     WAIVE = "WAIVE"
+    # M3B: Supervisor Review & Evidence
+    REVIEW_NOTE = "REVIEW_NOTE"
+    ADD_EVIDENCE = "ADD_EVIDENCE"
+    ASSIGN_REVIEWER = "ASSIGN_REVIEWER"
 
 
 class ExceptionSourceType(str, enum.Enum):
@@ -999,6 +1003,64 @@ class ExceptionAction(Base):
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     note: Mapped[str | None] = mapped_column(Text, nullable=True)
     evidence_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ─────────────────────────────────────────────────────────────
+# M3B: Supervisor Review & Evidence
+# Reference-based evidence, review notes, case ownership.
+# ─────────────────────────────────────────────────────────────
+
+class ExceptionEvidenceType(str, enum.Enum):
+    """Types of evidence that can be attached to an exception case."""
+    RAW_EVENT = "RAW_EVENT"
+    CANONICAL_EVENT = "CANONICAL_EVENT"
+    CHECKPOINT_RESULT = "CHECKPOINT_RESULT"
+    EQUIPMENT_ASSIGNMENT = "EQUIPMENT_ASSIGNMENT"
+    EQUIPMENT_COMPARISON = "EQUIPMENT_COMPARISON"
+    RULE_EVALUATION = "RULE_EVALUATION"
+    GPS = "GPS"
+    DEVICE = "DEVICE"
+    SUPERVISOR_NOTE = "SUPERVISOR_NOTE"
+    DOCUMENT_REFERENCE = "DOCUMENT_REFERENCE"
+
+
+class ExceptionEvidence(Base):
+    """Reference-based evidence attached to an exception case.
+
+    System-generated evidence is immutable (is_system_generated=True).
+    Human-added evidence records actor and timestamp.
+    Each evidence record references a source rather than duplicating raw data.
+    """
+    __tablename__ = "exception_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "exception_id", "evidence_type", "source_type", "source_id",
+            name="uq_exception_evidence_source",
+        ),
+        Index("ix_exception_evidence_case", "exception_id"),
+        Index("ix_exception_evidence_tenant", "tenant_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    exception_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("exception_cases.id"), index=True
+    )
+
+    # Evidence classification
+    evidence_type: Mapped[ExceptionEvidenceType] = mapped_column(Enum(ExceptionEvidenceType))
+    source_type: Mapped[str] = mapped_column(String(80))   # table/resource name
+    source_id: Mapped[str] = mapped_column(String(36))      # PK of source record
+
+    # Context
+    captured_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )  # event timestamp from source
+    added_by: Mapped[str | None] = mapped_column(String(36), nullable=True)  # NULL for system
+    is_system_generated: Mapped[bool] = mapped_column(default=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
