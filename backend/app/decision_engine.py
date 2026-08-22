@@ -197,6 +197,15 @@ def approve_decision(
         authorization_policy=authorization_policy,
     )
 
+    # M3D FIX: Block approval when authorization is not granted.
+    # Previous behavior silently recorded BLOCKED but allowed approval to proceed.
+    # Correct: if no valid policy authorizes the actor, approval must be blocked.
+    if auth_result == "BLOCKED_POLICY_DECISION":
+        raise AuthorizationBlocked(
+            f"Authorization blocked: no valid policy for {decision.decision_type.value}. "
+            f"Decision {decision.id} remains PENDING."
+        )
+
     # Validation based on decision type
     validation_failures = _validate_decision(db, tenant_id, decision)
     if validation_failures:

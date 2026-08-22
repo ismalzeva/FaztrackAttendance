@@ -638,17 +638,20 @@ class TestAuthorization:
             actual_equipment_id="ex25",
         )
 
-        # No authorization_policy → should still work but with BLOCKED result
-        approved = approve_decision(
-            db, dec.id, "metro", "sup1",
-            reason_text="Approved without policy",
-            # No authorization_policy
-        )
+        # M3D FIX: Missing authorization policy → AuthorizationBlocked
+        # Previously: approval succeeded silently with BLOCKED_POLICY_DECISION recorded.
+        # Correct: missing auth blocks approval, decision remains PENDING.
+        with pytest.raises(AuthorizationBlocked) as exc_info:
+            approve_decision(
+                db, dec.id, "metro", "sup1",
+                reason_text="Approved without policy",
+                # No authorization_policy
+            )
+        assert "BLOCKED_POLICY_DECISION" in str(exc_info.value) or "no valid policy" in str(exc_info.value)
 
-        # Decision is approved (validation passed) but auth result is BLOCKED
-        history = get_decision_history(db, dec.id, "metro")
-        approve_action = [a for a in history if a.action_type == "APPROVE"][0]
-        assert "BLOCKED_POLICY_DECISION" in approve_action.authorization_result
+        # Decision remains PENDING
+        fresh = get_decision(db, dec.id, "metro")
+        assert fresh.status == DecisionStatus.PENDING
 
     def test_m3c_20_no_automatic_approval(self, db):
         """M3C-20: Decision starts PENDING, never auto-approved."""
