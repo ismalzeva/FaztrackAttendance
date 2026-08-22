@@ -1064,3 +1064,132 @@ class ExceptionEvidence(Base):
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+
+# ─────────────────────────────────────────────────────────────
+# M3C: Substitution, Override & Controlled Decision
+# Decision lifecycle with validation, authorization, and audit.
+# ─────────────────────────────────────────────────────────────
+
+class DecisionType(str, enum.Enum):
+    """Types of controlled decisions."""
+    OPERATOR_SUBSTITUTION = "OPERATOR_SUBSTITUTION"
+    EQUIPMENT_SUBSTITUTION = "EQUIPMENT_SUBSTITUTION"
+    OPERATIONAL_OVERRIDE = "OPERATIONAL_OVERRIDE"
+
+
+class DecisionStatus(str, enum.Enum):
+    """Decision lifecycle states."""
+    PENDING = "PENDING"
+    APPROVED = "APPROVED"
+    REJECTED = "REJECTED"
+    CANCELLED = "CANCELLED"
+
+
+# Allowed decision lifecycle transitions
+DECISION_TRANSITIONS = {
+    DecisionStatus.PENDING: {DecisionStatus.APPROVED, DecisionStatus.REJECTED, DecisionStatus.CANCELLED},
+    DecisionStatus.APPROVED: set(),   # terminal
+    DecisionStatus.REJECTED: set(),   # terminal
+    DecisionStatus.CANCELLED: set(),  # terminal
+}
+
+
+class ExceptionDecision(Base):
+    """Controlled decision for an exception case.
+
+    Represents a human decision (substitution approval, override request, etc.)
+    that explains/authorizes a deviation WITHOUT rewriting history.
+
+    Lifecycle: PENDING -> APPROVED / REJECTED / CANCELLED
+    Authorization: policy-driven. Missing policy -> BLOCKED_POLICY_DECISION.
+    """
+    __tablename__ = "exception_decisions"
+    __table_args__ = (
+        Index("ix_decision_tenant_exception", "tenant_id", "exception_id"),
+        Index("ix_decision_tenant_status", "tenant_id", "status"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    exception_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("exception_cases.id"), index=True
+    )
+
+    # Decision classification
+    decision_type: Mapped[DecisionType] = mapped_column(Enum(DecisionType))
+    status: Mapped[DecisionStatus] = mapped_column(
+        Enum(DecisionStatus), default=DecisionStatus.PENDING
+    )
+
+    # Request info
+    requested_by: Mapped[str] = mapped_column(String(36))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    # Decision info (filled on APPROVE/REJECT)
+    decided_by: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # Reason (required for APPROVED/REJECTED)
+    reason_code: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    reason_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # References — planned/actual/requested values (IDs, not rewritten data)
+    planned_worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    planned_equipment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actual_worker_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    actual_equipment_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    requested_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    previous_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    # Rule version preserved
+    rule_version_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("rule_versions.id"), nullable=True
+    )
+
+    # Authorization
+    authorization_policy: Mapped[str | None] = mapped_column(String(100), nullable=True)
+
+    # Metadata
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=now, onupdate=now
+    )
+
+
+class ExceptionDecisionAction(Base):
+    """Immutable audit record for each decision lifecycle change.
+
+    Every status change creates one row. History cannot be rewritten.
+    """
+    __tablename__ = "exception_decision_actions"
+    __table_args__ = (
+        Index("ix_decision_action_decision", "decision_id"),
+        Index("ix_decision_action_tenant", "tenant_id"),
+    )
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    decision_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("exception_decisions.id"), index=True
+    )
+
+    # Action
+    action_type: Mapped[str] = mapped_column(String(50))  # REQUEST, APPROVE, REJECT, CANCEL
+    actor_user_id: Mapped[str] = mapped_column(String(36))
+    action_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    # Transition
+    previous_status: Mapped[DecisionStatus] = mapped_column(Enum(DecisionStatus))
+    new_status: Mapped[DecisionStatus] = mapped_column(Enum(DecisionStatus))
+
+    # Context
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    authorization_result: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
