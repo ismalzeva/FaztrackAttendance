@@ -200,7 +200,10 @@ def approve_decision(
     # M3D FIX: Block approval when authorization is not granted.
     # Previous behavior silently recorded BLOCKED but allowed approval to proceed.
     # Correct: if no valid policy authorizes the actor, approval must be blocked.
+    # M4A FIX: Set authorization_policy BEFORE raising so dashboard can detect blocked state.
+    decision.authorization_policy = auth_result
     if auth_result == "BLOCKED_POLICY_DECISION":
+        db.flush()
         raise AuthorizationBlocked(
             f"Authorization blocked: no valid policy for {decision.decision_type.value}. "
             f"Decision {decision.id} remains PENDING."
