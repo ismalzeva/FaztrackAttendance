@@ -245,6 +245,10 @@ class SiteType(str, enum.Enum):
     MESS = "MESS"
     BRIEFING_POINT = "BRIEFING_POINT"
     OPERATING_AREA = "OPERATING_AREA"
+    # Non-mining verticals (e.g. theme parks). Additive only — sync with
+    # migrations/versions/7d30eba67c93 (PG enum 'sitetype') via
+    # ALTER TYPE sitetype ADD VALUE IF NOT EXISTS 'ATTRACTION_SITE'.
+    ATTRACTION_SITE = "ATTRACTION_SITE"
 
 class SiteStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
