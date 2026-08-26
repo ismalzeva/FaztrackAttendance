@@ -1,15 +1,32 @@
 #!/usr/bin/env python3
 """
-Standalone Lumin Park demo seed script (theme-park vertical).
-Seeds all master data + demo operational data into PostgreSQL.
-Idempotent — safe to re-run. No Excel dependency.
+Standalone Lumin seed script — PROPERTY vertical (v2, corrected).
+
+Sumber kebenaran: Google Sheet "Lumin" (Projects / Workers / Assignments /
+Schedules / Supervisors / Lokasi Absen Karyawan).
+
+Sistem kerja Lumin (dari sheet, BUKAN karangan):
+  - Tidak ada shift. Jam kerja seragam Senin–Sabtu 08:00–17:00, Minggu libur.
+  - Karyawan absen di lokasi tempat mereka bekerja (kantor pemasaran project)
+    dengan validasi GPS geofence (radius per project).
+  - Penugasan harian worker -> project (tabel Assignment per tanggal).
+  - Supervisor punya scope project tertentu.
+
+Catatan fidelitas sheet:
+  - PRJ-04..07 ada kode+radiosnya tapi BELUM ada nama/koordinat -> tidak
+    di-seed; worker yang di-sheet ter-mapping ke sana dibuat TANPA assignment
+    harian (kondisi nyata: penugasan menunggu definisi project).
+  - EMP-025..050 di sheet tanpa nama/HP -> tidak di-seed.
+  - Jabatan hanya untuk 18 nama yang muncul di sheet "Lokasi Absen Karyawan";
+    sisanya dibiarkan tanpa jabatan (tidak mengarang).
 
 Usage:
   cd /home/ubuntu/FaztrackAttendance/backend
   .venv/bin/python scripts/seed_lumin_standalone.py
 
-Credentials are read from .env.lumin (FAZTRACK_DATABASE_URL /
+Credentials read from .env.lumin (FAZTRACK_DATABASE_URL /
 FAZTRACK_DEMO_SEED_PASSWORD) so no secret lives in this file.
+Idempotent — safe to re-run.
 """
 
 import os
@@ -59,13 +76,11 @@ from app.models import Base  # noqa: E402
 from app.models import (  # noqa: E402
     Tenant, TenantStatus,
     User, Membership, RoleCode, MembershipStatus,
-    Worker, Site, SiteType, SiteStatus,
-    Equipment, EquipmentStatus,
-    Role, Crew,
-    ShiftTemplate, CheckpointPolicy, RosterPolicy,
+    Worker,
+    Project, Assignment, WorkSchedule, SupervisorProject,
+    Role, EmployeeMeta,
     RuleVersion,
-    RosterAssignment, WorkStatus, SiteStatusEnum, ValidationStatus,
-    EmployeeMeta,
+    RosterAssignment, WorkStatus,
     CanonicalAttendanceEvent, CanonicalEventType, CanonicalProcessingStatus,
     RuleEvaluation, RuleEvaluationStatus, RuleSeverity,
     ExceptionCase, ExceptionSeverity, ExceptionStatus,
@@ -75,12 +90,7 @@ from app.rule_versioning import snapshot_rules  # noqa: E402
 
 
 def bootstrap_schema():
-    """Replicate metro bootstrap path: Base.metadata.create_all + enum sync.
-
-    The alembic chain double-emits CREATE TYPE sitetype on a fresh DB
-    (explicit .create() plus column auto-create), so fresh instances are
-    bootstrapped via metadata.create_all like app/seed_metro.py does.
-    """
+    """Replicate metro bootstrap path: Base.metadata.create_all + enum sync."""
     Base.metadata.create_all(engine)
     with engine.begin() as conn:
         conn.execute(text(
@@ -92,10 +102,16 @@ def bootstrap_schema():
 # Constants
 # ---------------------------------------------------------------------------
 TENANT_ID = "lumin-park-001"
-DEMO_START = date(2026, 9, 1)
-DEMO_END = date(2026, 9, 7)
 
-# WIB = UTC+7 (contrast: Metro uses WITA UTC+8)
+# Minggu demo: Senin 31 Agu – Sabtu 5 Sep 2026 (Minggu 6 Sep libur).
+WEEK_MONDAY = date(2026, 8, 31)
+DEMO_DATE = date(2026, 9, 1)          # Selasa — hari operasional demo
+WEEK_SUNDAY = WEEK_MONDAY + timedelta(days=6)
+
+WORK_START = time(8, 0)
+WORK_END = time(17, 0)
+
+# WIB = UTC+7
 WIB_OFFSET = timedelta(hours=7)
 
 
@@ -115,7 +131,7 @@ def ensure_tenant(db: Session) -> Tenant:
     t = get_or_none(db, Tenant, id=TENANT_ID)
     if t:
         return t
-    t = Tenant(id=TENANT_ID, code="lumin-park", name="Lumin Park",
+    t = Tenant(id=TENANT_ID, code="lumin-park", name="Lumin",
                timezone="Asia/Jakarta", status=TenantStatus.ACTIVE)
     db.add(t); db.flush()
     return t
@@ -141,38 +157,39 @@ def ensure_membership(db: Session, user_id: str, role: RoleCode) -> Membership:
     return m
 
 
-def ensure_site(db: Session) -> Site:
-    s = get_or_none(db, Site, id="site-lumin-main")
-    if s:
-        return s
-    s = Site(
-        id="site-lumin-main", tenant_id=TENANT_ID,
-        site_code="LUMIN-MAIN", site_name="Lumin Park",
-        site_type=SiteType.ATTRACTION_SITE, status=SiteStatus.ACTIVE,
-        timezone="Asia/Jakarta", effective_from=DEMO_START,
-        notes="[SIMULATION/NON_PRODUCTION] Demo data for theme-park vertical",
-    )
-    db.add(s); db.flush()
-    return s
+def ensure_project(db: Session, pid: str, code: str, name: str,
+                   lat: float, lng: float, radius_m: int) -> Project:
+    p = get_or_none(db, Project, id=pid)
+    if p:
+        return p
+    p = Project(id=pid, tenant_id=TENANT_ID, code=code, name=name,
+                latitude=lat, longitude=lng, geofence_radius_m=radius_m,
+                work_start=WORK_START, work_end=WORK_END,
+                is_active=True)
+    db.add(p); db.flush()
+    return p
 
 
-def ensure_shift(db: Session, sid: str, code: str, name: str,
-                 start: time, end: time,
-                 brk_start: time, brk_end: time,
-                 crosses: bool) -> ShiftTemplate:
-    st = get_or_none(db, ShiftTemplate, id=sid)
-    if st:
-        return st
-    st = ShiftTemplate(
-        id=sid, tenant_id=TENANT_ID,
-        shift_code=code, shift_name=name,
-        start_time=start, end_time=end,
-        break_start=brk_start, break_end=brk_end,
-        handover_start=end, handover_end=end,
-        crosses_midnight=crosses,
-    )
-    db.add(st); db.flush()
-    return st
+def norm_phone(raw) -> str | None:
+    """Sheet menyimpan HP sebagai float (85263340800.0) -> '085263340800'."""
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if s.endswith(".0"):
+        s = s[:-2]
+    if not s or s.lower() == "none":
+        return None
+    return s if s.startswith("0") else "0" + s
+
+
+def ensure_worker(db: Session, wid: str, code: str, name: str, phone=None) -> Worker:
+    w = get_or_none(db, Worker, id=wid)
+    if w:
+        return w
+    w = Worker(id=wid, tenant_id=TENANT_ID, code=code, name=name,
+               phone=norm_phone(phone), is_active=True)
+    db.add(w); db.flush()
+    return w
 
 
 def ensure_role(db: Session, rid: str, code: str, name: str) -> Role:
@@ -180,187 +197,198 @@ def ensure_role(db: Session, rid: str, code: str, name: str) -> Role:
     if r:
         return r
     r = Role(id=rid, tenant_id=TENANT_ID, role_code=code, role_name=name,
-             equipment_type_required=None, status="ACTIVE")
+             status="ACTIVE")
     db.add(r); db.flush()
     return r
 
 
-def ensure_crew(db: Session, cid: str, code: str, name: str) -> Crew:
-    c = get_or_none(db, Crew, id=cid)
-    if c:
-        return c
-    c = Crew(id=cid, tenant_id=TENANT_ID, crew_code=code, crew_name=name,
-             onsite_cycle_anchor=DEMO_START, cycle_offset_days=0)
-    db.add(c); db.flush()
-    return c
+def ensure_assignment(db: Session, aid: str, worker_id: str, project_id: str,
+                      work_date: date) -> Assignment:
+    a = get_or_none(db, Assignment, id=aid)
+    if a:
+        return a
+    a = Assignment(id=aid, tenant_id=TENANT_ID, worker_id=worker_id,
+                   project_id=project_id, work_date=work_date)
+    db.add(a); db.flush()
+    return a
 
 
-def ensure_worker(db: Session, wid: str, code: str, name: str) -> Worker:
-    w = get_or_none(db, Worker, id=wid)
-    if w:
-        return w
-    w = Worker(id=wid, tenant_id=TENANT_ID, code=code, name=name, is_active=True)
-    db.add(w); db.flush()
-    return w
+def ensure_schedule(db: Session, sid: str, worker_id: str, work_date: date,
+                    start: time, end: time, working: bool) -> WorkSchedule:
+    s = get_or_none(db, WorkSchedule, id=sid)
+    if s:
+        return s
+    s = WorkSchedule(id=sid, tenant_id=TENANT_ID, worker_id=worker_id,
+                     work_date=work_date, start_time=start, end_time=end,
+                     is_working_day=working)
+    db.add(s); db.flush()
+    return s
 
 
-def ensure_equipment(db: Session, eid: str, code: str, eq_type: str) -> Equipment:
-    e = get_or_none(db, Equipment, id=eid)
-    if e:
-        return e
-    e = Equipment(id=eid, tenant_id=TENANT_ID, equipment_code=code,
-                  equipment_type=eq_type, status=EquipmentStatus.ACTIVE,
-                  effective_from=DEMO_START)
-    db.add(e); db.flush()
-    return e
+def ensure_supervisor_scope(db: Session, mid: str, sid: str, project_id: str) -> None:
+    sp = get_or_none(db, SupervisorProject, id=sid)
+    if sp:
+        return
+    db.add(SupervisorProject(id=sid, tenant_id=TENANT_ID, membership_id=mid,
+                             project_id=project_id)); db.flush()
 
 
 def ensure_employee_meta(db: Session, em_id: str, worker_id: str,
-                         role_id: str, crew_id: str) -> EmployeeMeta:
+                         role_id: str | None) -> None:
     em = get_or_none(db, EmployeeMeta, id=em_id)
     if em:
-        return em
-    em = EmployeeMeta(
-        id=em_id, tenant_id=TENANT_ID, worker_id=worker_id,
-        employee_no=em_id, role_id=role_id, crew_id=crew_id,
-        effective_from=DEMO_START, cycle_offset_days=0,
-    )
+        return
+    em = EmployeeMeta(id=em_id, tenant_id=TENANT_ID, worker_id=worker_id,
+                      role_id=role_id, crew_id=None,
+                      effective_from=WEEK_MONDAY)
     db.add(em); db.flush()
-    return em
-
-
-def ensure_checkpoint_policy(db: Session, cp_id: str, cp_type: str,
-                              shift_id: str, seq: int,
-                              win_start: int, win_end: int) -> CheckpointPolicy:
-    cp = get_or_none(db, CheckpointPolicy, id=cp_id)
-    if cp:
-        return cp
-    cp = CheckpointPolicy(
-        id=cp_id, tenant_id=TENANT_ID,
-        checkpoint_type=cp_type, shift_id=shift_id,
-        enabled=True, sequence_order=seq,
-        window_start_offset_min=win_start,
-        window_end_offset_min=win_end,
-        severity="WARNING",
-        effective_from=DEMO_START,
-    )
-    db.add(cp); db.flush()
-    return cp
-
-
-def ensure_roster_policy(db: Session, rp_id: str, key: str, value: str,
-                         dtype: str, status: str) -> RosterPolicy:
-    rp = get_or_none(db, RosterPolicy, id=rp_id)
-    if rp:
-        return rp
-    rp = RosterPolicy(
-        id=rp_id, tenant_id=TENANT_ID,
-        policy_key=key, policy_value=value,
-        data_type=dtype, confirmation_status=status,
-    )
-    db.add(rp); db.flush()
-    return rp
 
 
 def ensure_roster_assignment(db: Session, ra_id: str, op_date: date,
-                              emp_id: str, crew_id: str,
-                              work_status: WorkStatus,
-                              shift_id: str | None,
-                              site_id: str | None,
-                              equip_id: str | None,
-                              rule_ver) -> RosterAssignment:
+                             employee_id: str, rule_ver) -> None:
     ra = get_or_none(db, RosterAssignment, id=ra_id)
     if ra:
-        return ra
-    site_status = SiteStatusEnum.ONSITE if work_status == WorkStatus.WORK else SiteStatusEnum.OFFSITE
-    ra = RosterAssignment(
+        return
+    db.add(RosterAssignment(
         id=ra_id, tenant_id=TENANT_ID,
-        roster_code=f"ROSTER-{op_date.strftime('%Y%m%d')}",
-        operating_date=op_date,
-        employee_id=emp_id, crew_id=crew_id,
-        site_cycle_day=0, site_status=site_status,
-        work_status=work_status,
-        shift_id=shift_id, site_id=site_id,
-        planned_equipment_id=equip_id,
-        rule_version_id=rule_ver.id if rule_ver else None,
-        effective_rule_version=rule_ver.version_label if rule_ver else None,
-        validation_status=ValidationStatus.DRAFT,
-    )
-    db.add(ra); db.flush()
-    return ra
+        roster_code=f"L-{employee_id[:12]}-{op_date.strftime('%Y%m%d')}",
+        operating_date=op_date, employee_id=employee_id,
+        crew_id=None, work_status=WorkStatus.WORK,
+        shift_id=None, site_id=None, planned_equipment_id=None,
+        rule_version_id=None, effective_rule_version=rule_ver,
+    )); db.flush()
 
 
 def ensure_canonical_event(db: Session, ce_id: str, emp_id: str,
-                            event_type: CanonicalEventType,
-                            local_ts: datetime, utc_ts: datetime,
-                            op_date: date, shift_id: str | None,
-                            site_id: str | None,
-                            source_ev_id: str) -> CanonicalAttendanceEvent:
+                           ev_type: CanonicalEventType,
+                           local_ts: datetime, utc_ts: datetime,
+                           op_date: date, source_ev_id: str) -> None:
     ce = get_or_none(db, CanonicalAttendanceEvent, id=ce_id)
     if ce:
-        return ce
-    ce = CanonicalAttendanceEvent(
-        id=ce_id, tenant_id=TENANT_ID,
-        employee_id=emp_id, event_type=event_type,
-        local_timestamp=local_ts, utc_timestamp=utc_ts,
-        timezone="Asia/Jakarta",
-        operating_date=op_date, shift_id=shift_id, site_id=site_id,
-        source="SEED", source_event_id=source_ev_id,
+        return
+    db.add(CanonicalAttendanceEvent(
+        id=ce_id, tenant_id=TENANT_ID, employee_id=emp_id,
+        event_type=ev_type,
+        local_timestamp=local_ts.replace(tzinfo=None),
+        utc_timestamp=utc_ts,
+        timezone="Asia/Jakarta", operating_date=op_date,
+        shift_id=None, site_id=None, source="SEED",
+        source_event_id=source_ev_id,
         processing_status=CanonicalProcessingStatus.VALID,
-    )
-    db.add(ce); db.flush()
-    return ce
+    )); db.flush()
 
 
-def ensure_rule_evaluation(db: Session, re_id: str, emp_id: str,
-                            op_date: date, shift_id: str | None,
-                            rule_code: str, rule_ver,
-                            status: RuleEvaluationStatus,
-                            severity: RuleSeverity,
-                            actual_val: str, expected_val: str,
-                            evidence_key: str, reason: str) -> RuleEvaluation:
+def ensure_rule_evaluation(db: Session, re_id: str, emp_id: str, op_date: date,
+                           rule_code: str, rule_ver,
+                           status: RuleEvaluationStatus, severity: RuleSeverity,
+                           measured: str, expected: str, evidence_key: str,
+                           reason: str) -> RuleEvaluation:
     re_ = get_or_none(db, RuleEvaluation, id=re_id)
     if re_:
         return re_
     re_ = RuleEvaluation(
-        id=re_id, tenant_id=TENANT_ID,
-        employee_id=emp_id, operating_date=op_date, shift_id=shift_id,
-        rule_code=rule_code,
+        id=re_id, tenant_id=TENANT_ID, employee_id=emp_id,
+        operating_date=op_date, shift_id=None, rule_code=rule_code,
         rule_version_id=rule_ver.id if rule_ver else None,
         status=status, severity=severity,
-        actual_value=actual_val, expected_value=expected_val,
+        actual_value=measured, expected_value=expected,
         evidence_key=evidence_key, reason=reason,
     )
     db.add(re_); db.flush()
     return re_
 
 
-def ensure_exception_case(db: Session, ec_id: str, emp_id: str,
-                           op_date: date, shift_id: str | None,
-                           source_type: str, source_id: str,
-                           exc_type: str, severity: ExceptionSeverity,
-                           rule_ver, detected_at: datetime,
-                           owner_id: str | None) -> ExceptionCase:
+def ensure_exception_case(db: Session, ec_id: str, emp_id: str, op_date: date,
+                          source_type: str, source_id: str, exc_type: str,
+                          severity: ExceptionSeverity, rule_ver,
+                          detected_at: datetime, owner_id: str | None) -> None:
     ec = get_or_none(db, ExceptionCase, id=ec_id)
     if ec:
-        return ec
-    ec = ExceptionCase(
-        id=ec_id, tenant_id=TENANT_ID,
+        return
+    db.add(ExceptionCase(
+        id=ec_id, tenant_id=TENANT_ID, employee_id=emp_id,
+        operating_date=op_date, shift_id=None,
         exception_type=exc_type, severity=severity,
         status=ExceptionStatus.OPEN,
-        employee_id=emp_id, operating_date=op_date, shift_id=shift_id,
         source_type=source_type, source_id=source_id,
         rule_version_id=rule_ver.id if rule_ver else None,
         detected_at=detected_at, opened_at=detected_at,
         current_owner_id=owner_id,
-    )
-    db.add(ec); db.flush()
-    return ec
+    )); db.flush()
+
+
+# ---------------------------------------------------------------------------
+# Master data — persis dari Google Sheet
+# ---------------------------------------------------------------------------
+# Projects (hanya yang lengkap nama+koordinat; PRJ-04..07 belum didefinisikan)
+PROJECTS_DEF = [
+    # pid, code, name, lat, lng, radius_m
+    ("proj-prj01", "PRJ-01", "Kantor Pemasaran Lumin",
+     -0.842277601826103, 100.37235855582, 150),
+    ("proj-prj02", "PRJ-02", "Kantor Pemasaran Laresta Cluster",
+     -0.847085850900649, 100.38819505397, 150),
+    ("proj-prj03", "PRJ-03", "Kantor Pemasaran Lubeg",
+     -0.965583526878328, 100.408184013492, 175),
+]
+
+# Workers: (emp_code, nama, hp, project_tujuan) — 24 nama terisi di sheet.
+# project None = di-sheet mapping ke PRJ-04..07 yang belum didefinisikan.
+WORKERS_DEF = [
+    ("EMP-001", "Alfan Suri",           "85263340800",   "PRJ-01"),
+    ("EMP-002", "Aneri Chersianova",    "81220497162",   "PRJ-02"),
+    ("EMP-003", "Armida",               "85271367816",   "PRJ-03"),
+    ("EMP-004", "Azizul Ardhi",         "85375517156",   None),  # PRJ-04
+    ("EMP-005", "Defvika Putra",        "81270167344",   None),  # PRJ-05
+    ("EMP-006", "Dian Hidayat",         "811663838",     None),  # PRJ-06
+    ("EMP-007", "Haniey Fauziah",       "82383001817",   None),  # PRJ-07
+    ("EMP-008", "Ihsan Kurnia",         "811616165",     "PRJ-01"),
+    ("EMP-009", "Muthiara Firdaus",     "82288523285",   "PRJ-02"),
+    ("EMP-010", "Rahayu Fadilah",       "83838069098",   "PRJ-03"),
+    ("EMP-011", "Rahmad Afdal",         "85218149978",   None),  # PRJ-04
+    ("EMP-012", "Rahmat Ilham",         "83182266592",   None),  # PRJ-05
+    ("EMP-013", "Tesia Ramadhani Putri","82123444215",   None),  # PRJ-06
+    ("EMP-014", "Tomy Zafera",          "895405415714",  None),  # PRJ-07
+    ("EMP-015", "Ummi Arifah",          "81267892749",   "PRJ-01"),
+    ("EMP-016", "Vanny Amelia",         "81266450291",   "PRJ-02"),
+    ("EMP-017", "Wike Januriati",       "81266343014",   "PRJ-03"),
+    ("EMP-018", "Yusuf Maulana",        "82363261951",   None),  # PRJ-04
+    ("EMP-019", "Zilham Zikri",         "82173884661",   None),  # PRJ-05
+    ("EMP-020", "Apes",                 "83186049749",   None),  # PRJ-06
+    ("EMP-021", "Ali",                  "82285088368",   None),  # PRJ-07
+    ("EMP-022", "Yus",                  "83182310429",   "PRJ-01"),
+    ("EMP-023", "Ferdi",                "85185783200",   "PRJ-02"),
+    ("EMP-024", "Rapi",                 "83844174344",   "PRJ-03"),
+]
+
+# Jabatan dari sheet "Lokasi Absen Karyawan" (hanya 18 nama yang tercantum)
+POSITIONS = {
+    "EMP-002": ("Sales Officer", None),
+    "EMP-003": ("Finance, Accounting & Tax Manager", None),
+    "EMP-004": ("Social Media Specialist", None),
+    "EMP-005": ("Project Control Officer", None),
+    "EMP-006": ("Project Manager Construction", None),
+    "EMP-007": ("Project Control Manager", None),
+    "EMP-008": ("Legal Staff", None),
+    "EMP-009": ("Social Media Specialist", None),
+    "EMP-010": ("Sales Officer", None),
+    "EMP-011": ("Pengawas Proyek", None),
+    "EMP-012": ("Pengawas Proyek", None),
+    "EMP-013": ("Admin Sales", None),
+    "EMP-014": ("Pengawas Proyek", None),
+    "EMP-015": ("Human Capital Manager", None),
+    "EMP-016": ("Sales Officer", None),
+    "EMP-017": ("Finance & Accounting Staff", None),
+    "EMP-018": ("Logistic Staff", None),
+    "EMP-019": ("Architect Engineer", None),
+}
+
+RULE_VERSION = "LUMIN-RULE-v0.2"
 
 
 def seed():
     bootstrap_schema()
     counts = {}
+    notes = []
     db = SessionLocal()
     try:
         # ── Tenant ──────────────────────────────────────────────────────
@@ -368,227 +396,133 @@ def seed():
         counts["tenant"] = 1
 
         # ── Users & Memberships ─────────────────────────────────────────
-        admin = ensure_user(db, "lumin-admin-001", "admin@luminpark.id",
-                            "Lumin Park Admin")
-        sup = ensure_user(db, "lumin-sup-001", "supervisor@luminpark.id",
-                          "Supervisor Lumin Park")
-        ensure_membership(db, admin.id, RoleCode.OWNER)
-        ensure_membership(db, sup.id, RoleCode.SUPERVISOR)
+        admin = ensure_user(db, "lumin-admin-001", "admin@lumin.id",
+                            "Admin Lumin")
+        sup = ensure_user(db, "lumin-sup-001", "supervisor@lumin.id",
+                          "Supervisor Lumin")
+        admin_mem = ensure_membership(db, admin.id, RoleCode.OWNER)
+        sup_mem = ensure_membership(db, sup.id, RoleCode.SUPERVISOR)
         counts["users"] = 2
-        counts["memberships"] = 2
 
-        # ── Site (ATTRACTION_SITE) ──────────────────────────────────────
-        site = ensure_site(db)
-        counts["sites"] = 1
+        # ── Projects (kantor pemasaran + geofence) ──────────────────────
+        proj_by_code = {}
+        for pid, code, name, lat, lng, rad in PROJECTS_DEF:
+            proj_by_code[code] = ensure_project(db, pid, code, name, lat, lng, rad)
+        counts["projects"] = len(proj_by_code)
+        notes.append("PRJ-04..PRJ-07 dilewati: sheet belum memuat nama/koordinat")
 
-        # ── Shift Templates (WIB) ───────────────────────────────────────
-        pagi = ensure_shift(db, "PAGI", "PAGI", "Shift Pagi",
-                            time(8, 0), time(16, 0),
-                            time(12, 0), time(13, 0), False)
-        sore = ensure_shift(db, "SORE", "SORE", "Shift Sore",
-                            time(15, 0), time(23, 0),
-                            time(19, 0), time(20, 0), False)
-        counts["shift_templates"] = 2
-
-        # ── Roles (theme park) ──────────────────────────────────────────
-        role_ride = ensure_role(db, "role_ride", "role_ride", "Ride Operator")
-        role_guest = ensure_role(db, "role_guest", "role_guest", "Guest Service")
-        role_cash = ensure_role(db, "role_cashier", "role_cashier", "Cashier")
-        role_maint = ensure_role(db, "role_maint", "role_maint", "Maintenance")
-        counts["roles"] = 4
-
-        # ── Crews ───────────────────────────────────────────────────────
-        crew_a = ensure_crew(db, "crew_a", "crew_a", "Crew A")
-        crew_b = ensure_crew(db, "crew_b", "crew_b", "Crew B")
-        counts["crews"] = 2
-
-        # ── Workers (12, LP001-LP012) ───────────────────────────────────
-        workers_def = [
-            ("lp01", "LP001", "Adi Nugraha"),
-            ("lp02", "LP002", "Putri Maharani"),
-            ("lp03", "LP003", "Bagus Wicaksono"),
-            ("lp04", "LP004", "Sari Rahmadani"),
-            ("lp05", "LP005", "Dimas Ardiansyah"),
-            ("lp06", "LP006", "Ratna Dewi Puspita"),
-            ("lp07", "LP007", "Fajar Ramadhan"),
-            ("lp08", "LP008", "Intan Permata Sari"),
-            ("lp09", "LP009", "Yoga Prasetyo"),
-            ("lp10", "LP010", "Maya Anggraeni"),
-            ("lp11", "LP011", "Reza Fahlevi"),
-            ("lp12", "LP012", "Nadia Kartika"),
-        ]
+        # ── Workers ─────────────────────────────────────────────────────
         workers = {}
-        for wid, code, name in workers_def:
-            workers[wid] = ensure_worker(db, wid, code, name)
+        for code, name, phone, _pc in WORKERS_DEF:
+            workers[code] = ensure_worker(db, f"w-{code.lower()}", code, name, phone)
         counts["workers"] = len(workers)
+        notes.append("EMP-025..050 dilewati: sheet belum memuat nama/HP")
 
-        # ── Equipment (2 ride units) ────────────────────────────────────
-        rc1 = ensure_equipment(db, "rc01", "RC-01", "ROLLER_COASTER")
-        fw1 = ensure_equipment(db, "fw01", "FW-01", "FERRIS_WHEEL")
-        counts["equipment"] = 2
+        # ── Jabatan (Role) + EmployeeMeta ───────────────────────────────
+        role_cache = {}
+        meta_count = 0
+        for code, (pos_name, _x) in POSITIONS.items():
+            slug = pos_name.lower()
+            slug = "".join(ch if ch.isalnum() else "_" for ch in slug)
+            rid = f"role-{slug[:31]}"  # PK roles varchar(36)
+            if rid not in role_cache:
+                role_cache[rid] = ensure_role(db, rid, slug, pos_name)
+            ensure_employee_meta(db, f"em-{code.lower()}",
+                                 workers[code].id, role_cache[rid].id)
+            meta_count += 1
+        counts["roles"] = len(role_cache)
+        counts["employee_meta"] = meta_count
 
-        # ── EmployeeMeta ────────────────────────────────────────────────
-        em_map = {
-            "lp01": ("em-lp01", role_ride.id,  crew_a.id),
-            "lp02": ("em-lp02", role_guest.id, crew_a.id),
-            "lp03": ("em-lp03", role_cash.id,  crew_a.id),
-            "lp04": ("em-lp04", role_maint.id, crew_a.id),
-            "lp05": ("em-lp05", role_ride.id,  crew_b.id),
-            "lp06": ("em-lp06", role_guest.id, crew_b.id),
-            "lp07": ("em-lp07", role_ride.id,  crew_b.id),
-            "lp08": ("em-lp08", role_cash.id,  crew_b.id),
-            "lp09": ("em-lp09", role_maint.id, crew_b.id),
-            "lp10": ("em-lp10", role_ride.id,  crew_a.id),
-            "lp11": ("em-lp11", role_guest.id, crew_a.id),
-            "lp12": ("em-lp12", role_ride.id,  crew_b.id),
-        }
-        for wid, (em_id, rid, cid) in em_map.items():
-            ensure_employee_meta(db, em_id, workers[wid].id, rid, cid)
-        counts["employee_meta"] = len(em_map)
+        # ── Supervisor scope: semua project terdefinisi ─────────────────
+        seq = 0
+        for code, proj in proj_by_code.items():
+            seq += 1
+            ensure_supervisor_scope(db, sup_mem.id, f"sp-sup-{seq}", proj.id)
+        counts["supervisor_scopes"] = seq
 
-        # ── Checkpoint Policies ─────────────────────────────────────────
-        cp_types = [
-            ("BRIEFING_START", 1, -15, 0),
-            ("BRIEFING_END",   2, -5,  5),
-            ("SHIFT_START",    3, -5,  5),
-            ("BREAK_START",    4, -5,  5),
-            ("BREAK_END",      5, -5,  5),
-            ("HANDOVER_START", 6, -5,  5),
-            ("SHIFT_END",      7, -5,  5),
-        ]
-        cp_count = 0
-        for cp_type, seq, ws, we in cp_types:
-            for shift in [pagi, sore]:
-                cp_id = f"cp-{cp_type.lower()}-{shift.id.lower()}"
-                ensure_checkpoint_policy(db, cp_id, cp_type, shift.id, seq, ws, we)
-                cp_count += 1
-        counts["checkpoint_policies"] = cp_count
-
-        # ── Roster Policies ─────────────────────────────────────────────
-        ensure_roster_policy(db, "rp-equip", "equipment_assignment_enabled", "true", "boolean", "CONFIRMED")
-        ensure_roster_policy(db, "rp-comp",  "competency_validation_enabled", "true", "boolean", "CONFIRMED")
-        ensure_roster_policy(db, "rp-rest",  "minimum_rest_hours", "TBC", "integer", "TBC")
-        ensure_roster_policy(db, "rp-geo",   "geofence_radius_m", "TBC", "integer", "TBC")
-        counts["roster_policies"] = 4
-
-        # ── Rule Version ────────────────────────────────────────────────
-        rule_ver = snapshot_rules(db, TENANT_ID, "LUMIN-RULE-v0.1", DEMO_START)
-        counts["rule_versions"] = 1
-
-        # ── Roster Assignments (12 workers × 7 days) ────────────────────
-        # wid, work_status, shift, crew, planned_equipment (or None)
-        planned_equip = {
-            "lp01": rc1.id, "lp05": fw1.id,
-            "lp07": rc1.id, "lp10": fw1.id, "lp12": rc1.id,
-        }
-        ra_defs = [
-            ("lp01", WorkStatus.WORK, pagi.id, crew_a.id, "lp01"),
-            ("lp02", WorkStatus.WORK, pagi.id, crew_a.id, None),
-            ("lp03", WorkStatus.WORK, pagi.id, crew_a.id, None),
-            ("lp04", WorkStatus.WORK, sore.id, crew_a.id, None),
-            ("lp05", WorkStatus.WORK, sore.id, crew_b.id, "lp05"),
-            ("lp06", WorkStatus.WORK, sore.id, crew_b.id, None),
-            ("lp07", WorkStatus.WORK, pagi.id, crew_b.id, "lp07"),
-            ("lp08", WorkStatus.WORK, pagi.id, crew_b.id, None),
-            ("lp09", WorkStatus.WORK, sore.id, crew_b.id, None),
-            ("lp10", WorkStatus.WORK, pagi.id, crew_a.id, "lp10"),
-            ("lp11", WorkStatus.REST, pagi.id, crew_a.id, None),
-            ("lp12", WorkStatus.OFFSITE, sore.id, crew_b.id, "lp12"),
-        ]
+        # ── Jadwal & Penugasan harian (Sen–Sab 08:00–17:00, Min libur) ──
+        asg_count = 0
+        sch_count = 0
         ra_count = 0
-        roster_ids = {}
-        d = DEMO_START
-        while d <= DEMO_END:
+        d = WEEK_MONDAY
+        while d <= WEEK_SUNDAY:
+            is_sunday = (d == WEEK_SUNDAY)
             ds = d.strftime("%Y%m%d")
-            for wid, ws_, sid_, cid_, eq_key in ra_defs:
-                ra_id = f"ra-{wid}-{ds}"
-                equip_id = planned_equip.get(eq_key) if eq_key else None
-                ensure_roster_assignment(
-                    db, ra_id, d, workers[wid].id, cid_,
-                    ws_, sid_, site.id, equip_id, rule_ver,
-                )
-                if d == DEMO_START and wid in ("lp02", "lp05"):
-                    roster_ids[wid] = ra_id
-                ra_count += 1
+            for code, _name, _phone, pc in WORKERS_DEF:
+                wid = workers[code].id
+                sch_count += 1 if ensure_schedule(
+                    db, f"sch-{code.lower()}-{ds}", wid, d,
+                    WORK_START, WORK_END, not is_sunday,
+                ) is not None else 1
+                if is_sunday or pc not in proj_by_code:
+                    continue
+                ensure_assignment(db, f"asg-{code.lower()}-{ds}",
+                                  wid, proj_by_code[pc].id, d)
+                asg_count += 1
+                if d <= DEMO_DATE:  # roster layer utk dashboard s.d. demo date
+                    ensure_roster_assignment(db, f"ra-{code.lower()}-{ds}",
+                                             d, wid, RULE_VERSION)
+                    ra_count += 1
             d += timedelta(days=1)
+        counts["assignments"] = asg_count
+        counts["work_schedules"] = sch_count
         counts["roster_assignments"] = ra_count
 
-        # ── Demo Operational Data (2026-09-01 only, WIB) ────────────────
-        op_date = DEMO_START
+        # ── Rule Version ────────────────────────────────────────────────
+        rule_ver_row = snapshot_rules(db, TENANT_ID, RULE_VERSION, WEEK_MONDAY)
+        counts["rule_versions"] = 1
 
-        # lp02 (Guest Service, PAGI): CHECK_IN 07:55 WIB, CHECK_OUT 16:05 WIB
-        lp02_in_local = datetime(2026, 9, 1, 7, 55)
-        ensure_canonical_event(
-            db, "ce-lp02-in", workers["lp02"].id, CanonicalEventType.CHECK_IN,
-            lp02_in_local.replace(tzinfo=timezone(WIB_OFFSET)),
-            wib_to_utc(lp02_in_local), op_date, pagi.id, site.id,
-            "seed-lp02-checkin",
+        # ── Data operasional demo (2026-09-01, WIB) ─────────────────────
+        # Kasus 1 (WARNING): EMP-002 Aneri (PRJ-02) check-in telat 08:14.
+        aneri_in = aware_utc(datetime(2026, 9, 1, 8, 14))
+        ensure_canonical_event(db, "ce-emp002-in", workers["EMP-002"].id,
+                               CanonicalEventType.CHECK_IN,
+                               datetime(2026, 9, 1, 8, 14), aneri_in,
+                               DEMO_DATE, "seed-emp002-checkin")
+        aneri_out = aware_utc(datetime(2026, 9, 1, 17, 5))
+        ensure_canonical_event(db, "ce-emp002-out", workers["EMP-002"].id,
+                               CanonicalEventType.CHECK_OUT,
+                               datetime(2026, 9, 1, 17, 5), aneri_out,
+                               DEMO_DATE, "seed-emp002-checkout")
+        re_late = ensure_rule_evaluation(
+            db, f"re-emp002-late-{DEMO_DATE.strftime('%Y%m%d')}",
+            workers["EMP-002"].id, DEMO_DATE, "LATE_CHECK_IN", rule_ver_row,
+            RuleEvaluationStatus.FAIL, RuleSeverity.WARNING,
+            "08:14", "08:00", f"seed-emp002-checkin",
+            "Check-in 08:14 WIB melewati jam mulai kerja 08:00 WIB "
+            "(Kantor Pemasaran Laresta Cluster)",
         )
-        lp02_out_local = datetime(2026, 9, 1, 16, 5)
-        ce_lp02_out = ensure_canonical_event(
-            db, "ce-lp02-out", workers["lp02"].id, CanonicalEventType.CHECK_OUT,
-            lp02_out_local.replace(tzinfo=timezone(WIB_OFFSET)),
-            wib_to_utc(lp02_out_local), op_date, pagi.id, site.id,
-            "seed-lp02-checkout",
+        ensure_exception_case(
+            db, "exc-emp002-late-0901", workers["EMP-002"].id, DEMO_DATE,
+            "RULE_EVALUATION", re_late.id, "LATE_CHECK_IN",
+            ExceptionSeverity.WARNING, rule_ver_row,
+            aware_utc(datetime(2026, 9, 1, 8, 20)), sup.id,
         )
 
-        # lp05 (Ride Operator, SORE): CHECK_IN 15:00 WIB only — missing checkout
-        lp05_in_local = datetime(2026, 9, 1, 15, 0)
-        ensure_canonical_event(
-            db, "ce-lp05-in", workers["lp05"].id, CanonicalEventType.CHECK_IN,
-            lp05_in_local.replace(tzinfo=timezone(WIB_OFFSET)),
-            wib_to_utc(lp05_in_local), op_date, sore.id, site.id,
-            "seed-lp05-checkin",
+        # Kasus 2 (CRITICAL): EMP-008 Ihsan (PRJ-01) check-in 08:03,
+        # tidak pernah check-out sampai lewat jam selesai kerja.
+        ihsan_in = aware_utc(datetime(2026, 9, 1, 8, 3))
+        ensure_canonical_event(db, "ce-emp008-in", workers["EMP-008"].id,
+                               CanonicalEventType.CHECK_IN,
+                               datetime(2026, 9, 1, 8, 3), ihsan_in,
+                               DEMO_DATE, "seed-emp008-checkin")
+        ensure_exception_case(
+            db, "exc-emp008-missing-checkout-0901", workers["EMP-008"].id,
+            DEMO_DATE, "CHECKPOINT_VALIDATION", "ce-emp008-in", "MISSING_CHECKOUT",
+            ExceptionSeverity.CRITICAL, rule_ver_row,
+            aware_utc(datetime(2026, 9, 1, 17, 35)), sup.id,
         )
         counts["canonical_events"] = 3
-
-        # ── Rule Evaluation: lp02 late check-in (WARNING) ───────────────
-        re_lp02 = ensure_rule_evaluation(
-            db, f"re-lp02-late-{op_date.strftime('%Y%m%d')}",
-            workers["lp02"].id, op_date, pagi.id,
-            "LATE_CHECK_IN", rule_ver,
-            RuleEvaluationStatus.FAIL, RuleSeverity.WARNING,
-            "08:10", "08:00",
-            f"lp02-{op_date}-CHECK_IN",
-            "Check-in at 08:10 WIB exceeds PAGI shift start 08:00 WIB",
-        )
         counts["rule_evaluations"] = 1
-
-        # ── Exception Case 1: Late Check-in — WARNING / OPEN ────────────
-        detected_1 = aware_utc(datetime(2026, 9, 1, 8, 15))
-        ensure_exception_case(
-            db, "exc-lp02-late-0901", workers["lp02"].id,
-            op_date, pagi.id,
-            "RULE_EVALUATION", re_lp02.id,
-            "LATE_CHECK_IN",
-            ExceptionSeverity.WARNING,
-            rule_ver, detected_1,
-            sup.id,
-        )
-        counts["exception_late_checkin"] = 1
-
-        # ── Exception Case 2: Missing Checkout — CRITICAL / OPEN ────────
-        # lp05 checked in at 15:00 WIB but never checked out (SORE ends
-        # 23:00 WIB) → detection simulated after shift end.
-        detected_2 = aware_utc(datetime(2026, 9, 1, 23, 30))
-        ensure_exception_case(
-            db, "exc-lp05-missing-checkout-0901", workers["lp05"].id,
-            op_date, sore.id,
-            "CHECKPOINT_VALIDATION", f"ce-lp05-in:{op_date.strftime('%Y%m%d')}",
-            "MISSING_CHECKOUT",
-            ExceptionSeverity.CRITICAL,
-            rule_ver, detected_2,
-            sup.id,
-        )
-        counts["exception_missing_checkout"] = 1
+        counts["exception_cases"] = 2
 
         # ── Commit ──────────────────────────────────────────────────────
         db.commit()
 
         # ── Summary ─────────────────────────────────────────────────────
-        print("=" * 60)
-        print("  Lumin Park Seed — COMPLETE")
-        print("=" * 60)
+        print("=" * 62)
+        print("  Lumin Seed v2 (PROPERTY vertical) — COMPLETE")
+        print("=" * 62)
         print(f"  Tenant:              {tenant.code} ({tenant.id})")
         db_host = DB_URL.split('@')[-1] if '@' in DB_URL else DB_URL
         print(f"  Database:            {db_host}")
@@ -596,12 +530,18 @@ def seed():
         for key, val in counts.items():
             print(f"  {key:25s}: {val}")
         print()
-        print(f"  Demo period:         {DEMO_START} → {DEMO_END}")
-        print(f"  Operational data:    {DEMO_START} only")
-        print(f"  Timezone:            Asia/Jakarta (WIB, UTC+7)")
-        print(f"  Rule version:        LUMIN-RULE-v0.1")
+        print(f"  Sistem kerja:        Tanpa shift — Sen–Sab 08:00–17:00 WIB")
+        print(f"  Absensi:             Per lokasi project + geofence GPS")
+        print(f"  Minggu demo:         {WEEK_MONDAY} → {WEEK_SUNDAY} (Min libur)")
+        print(f"  Hari operasional:    {DEMO_DATE}")
+        print(f"  Rule version:        {RULE_VERSION}")
         print(f"  Password:            {'*' * len(PASSWORD)}")
-        print("=" * 60)
+        if notes:
+            print()
+            print("  Catatan fidelitas sheet:")
+            for n in notes:
+                print(f"   - {n}")
+        print("=" * 62)
 
     except Exception as exc:
         db.rollback()
@@ -615,4 +555,3 @@ def seed():
 
 if __name__ == "__main__":
     seed()
-
