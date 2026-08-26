@@ -14,6 +14,7 @@ from app.security import create_access_token, verify_password
 from app.master_data import router as master_data_router
 from app.devices import router as devices_router
 from app.attendance import router as attendance_router
+from app.worker_web import router as worker_web_router
 from app.timesheets import router as timesheets_router
 from app.dashboard import router as dashboard_router
 from app.roster import router as roster_router
@@ -24,6 +25,14 @@ settings=get_settings(); app=FastAPI(title="Faztrack Attendance API",version="0.
 app.include_router(master_data_router)
 app.include_router(devices_router)
 app.include_router(attendance_router)
+app.include_router(worker_web_router)
+
+from fastapi.responses import FileResponse
+from pathlib import Path
+
+@app.get("/absen",include_in_schema=False)
+def worker_absen_page():
+    return FileResponse(Path(__file__).parent/"static"/"absen.html",media_type="text/html")
 app.include_router(timesheets_router)
 app.include_router(dashboard_router)
 app.include_router(roster_router)

@@ -30,6 +30,7 @@ class EnrollmentDecision(BaseModel):
     reason: str | None = Field(default=None,max_length=300)
 class AttendanceChallengeRequest(BaseModel):
     event_type: Literal["CHECK_IN","CHECK_OUT"]
+    project_id: str | None = None
 class AttendanceSubmitRequest(BaseModel):
     challenge_id: str
     challenge: str
@@ -40,6 +41,7 @@ class AttendanceSubmitRequest(BaseModel):
     accuracy_m: float = Field(gt=0,le=10000)
     captured_at_client: str = Field(min_length=20,max_length=40)
     signature: str
+    site_note: str | None = Field(default=None,max_length=200)
 class AttendanceReviewDecision(BaseModel):
     approve: bool
     reason: str = Field(min_length=3,max_length=300)

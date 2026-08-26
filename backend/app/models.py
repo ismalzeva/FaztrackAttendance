@@ -24,6 +24,7 @@ class Tenant(Base):
     name: Mapped[str]=mapped_column(String(200))
     timezone: Mapped[str]=mapped_column(String(80),default="Asia/Jakarta")
     status: Mapped[TenantStatus]=mapped_column(Enum(TenantStatus),default=TenantStatus.ACTIVE)
+    allow_multi_checkin: Mapped[bool]=mapped_column(Boolean,default=False)
     created_at: Mapped[datetime]=mapped_column(DateTime(timezone=True),default=now)
 
 class User(Base):
@@ -190,13 +191,13 @@ class AttendanceChallenge(Base):
 
 class AttendanceEvent(Base):
     __tablename__="attendance_events"
-    __table_args__=(Index("uq_counted_attendance_event","tenant_id","worker_id","work_date","event_type",unique=True,sqlite_where=text("status IN ('VALID','REVIEW')"),postgresql_where=text("status IN ('VALID','REVIEW')")),)
+    __table_args__=(Index("ix_counted_attendance_event","tenant_id","worker_id","work_date","event_type",sqlite_where=text("status IN ('VALID','REVIEW')"),postgresql_where=text("status IN ('VALID','REVIEW')")),)
     id: Mapped[str]=mapped_column(String(36),primary_key=True,default=uid)
     tenant_id: Mapped[str]=mapped_column(ForeignKey("tenants.id"),index=True)
     worker_id: Mapped[str]=mapped_column(ForeignKey("workers.id"),index=True)
     project_id: Mapped[str]=mapped_column(ForeignKey("projects.id"),index=True)
-    device_binding_id: Mapped[str]=mapped_column(ForeignKey("device_bindings.id"),index=True)
-    challenge_id: Mapped[str]=mapped_column(ForeignKey("attendance_challenges.id"),unique=True)
+    device_binding_id: Mapped[str | None]=mapped_column(ForeignKey("device_bindings.id"),nullable=True,index=True)
+    challenge_id: Mapped[str]=mapped_column(ForeignKey("attendance_challenges.id"))
     event_type: Mapped[AttendanceType]=mapped_column(Enum(AttendanceType),index=True)
     status: Mapped[AttendanceStatus]=mapped_column(Enum(AttendanceStatus),index=True)
     reason_code: Mapped[str | None]=mapped_column(String(80),nullable=True)
@@ -208,6 +209,7 @@ class AttendanceEvent(Base):
     accuracy_m: Mapped[float]=mapped_column(Float)
     distance_m: Mapped[float]=mapped_column(Float)
     signature: Mapped[str]=mapped_column(Text)
+    site_note: Mapped[str | None]=mapped_column(String(200),nullable=True)
     reviewed_at: Mapped[datetime | None]=mapped_column(DateTime(timezone=True),nullable=True)
     reviewed_by: Mapped[str | None]=mapped_column(ForeignKey("users.id"),nullable=True)
     review_reason: Mapped[str | None]=mapped_column(String(300),nullable=True)

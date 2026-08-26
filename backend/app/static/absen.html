@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="theme-color" content="#1B3A5C">
+<title>Absen Karyawan — Lumin Park</title>
+<style>
+  :root{
+    --navy:#1B3A5C; --blue:#2D9CDB; --orange:#FF7A00;
+    --bg:#F4F7FB; --card:#FFFFFF; --ink:#333F50; --muted:#8492A6;
+    --line:#E3EAF3; --ok:#27AE60; --warn:#F2C94C; --bad:#EB5757;
+    --radius:18px;
+  }
+  *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+    background:var(--bg);color:var(--ink);
+    max-width:480px;margin:0 auto;min-height:100dvh;display:flex;flex-direction:column;
+  }
+  .topbar{
+    background:linear-gradient(135deg,var(--navy) 0%,#234A73 100%);
+    color:#fff;padding:calc(env(safe-area-inset-top) + 14px) 20px 18px;
+    border-radius:0 0 24px 24px;position:relative;flex-shrink:0;
+  }
+  .brand{display:flex;align-items:center;gap:10px}
+  .logo{width:38px;height:38px;border-radius:50%;background:var(--orange);
+    display:flex;align-items:center;justify-content:center;font-weight:800;font-size:19px;color:#fff;flex-shrink:0}
+  .brand .t1{font-size:17px;font-weight:700;line-height:1.15}
+  .brand .t2{font-size:12px;opacity:.75;margin-top:2px}
+  .logout{position:absolute;right:16px;top:calc(env(safe-area-inset-top) + 16px);
+    background:rgba(255,255,255,.14);border:none;color:#fff;font-size:12px;padding:7px 12px;border-radius:99px}
+  .content{flex:1;padding:18px 16px calc(env(safe-area-inset-bottom) + 28px);display:flex;flex-direction:column;gap:14px}
+  .card{background:var(--card);border-radius:var(--radius);padding:18px;box-shadow:0 2px 10px rgba(27,58,92,.06)}
+  h1{font-size:21px;margin-bottom:4px}
+  .sub{font-size:13px;color:var(--muted)}
+  label{display:block;font-size:13px;font-weight:600;margin:14px 0 6px;color:var(--ink)}
+  input,select{
+    width:100%;padding:14px 14px;font-size:16px;border:1.5px solid var(--line);
+    border-radius:12px;background:#FAFCFE;color:var(--ink);appearance:none;-webkit-appearance:none;
+  }
+  input:focus,select:focus{outline:none;border-color:var(--blue)}
+  .btn{
+    width:100%;border:none;border-radius:14px;padding:16px;font-size:16px;font-weight:700;
+    margin-top:18px;color:#fff;cursor:pointer;transition:transform .05s;
+  }
+  .btn:active{transform:scale(.98)}
+  .btn-primary{background:linear-gradient(135deg,var(--orange),#FF9533)}
+  .btn-blue{background:linear-gradient(135deg,var(--blue),#56B6EC)}
+  .btn-outline{background:#fff;color:var(--navy);border:1.5px solid var(--navy)}
+  .btn[disabled]{opacity:.55}
+  .err{display:none;margin-top:12px;background:#FDECEC;color:#B3261E;font-size:13px;padding:11px 13px;border-radius:11px}
+  .shiftbanner{
+    display:flex;align-items:center;gap:12px;
+    background:linear-gradient(135deg,#EAF6FE,#F0FBF4);border:1px solid #CFE9F7;
+    border-radius:var(--radius);padding:14px 16px;
+  }
+  .pulse{width:10px;height:10px;border-radius:50%;background:var(--ok);box-shadow:0 0 0 4px rgba(39,174,96,.18);animation:p 1.6s infinite;flex-shrink:0}
+  @keyframes p{50%{box-shadow:0 0 0 8px rgba(39,174,96,.06)}}
+  .shiftbanner .a{font-size:14px;font-weight:700}
+  .shiftbanner .b{font-size:12px;color:var(--muted);margin-top:2px}
+  .seclabel{font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:6px 2px 0}
+  .proj{display:flex;align-items:center;gap:12px;padding:14px;border:1.5px solid var(--line);
+    border-radius:14px;margin-bottom:10px;background:#fff;cursor:pointer;transition:border-color .15s}
+  .proj.sel{border-color:var(--blue);background:#F5FBFF}
+  .radio{width:20px;height:20px;border-radius:50%;border:2px solid #CBD5E1;flex-shrink:0;position:relative}
+  .proj.sel .radio{border-color:var(--blue)}
+  .proj.sel .radio::after{content:'';position:absolute;inset:3.5px;border-radius:50%;background:var(--blue)}
+  .proj .n{font-size:14.5px;font-weight:600}
+  .proj .d{font-size:12px;color:var(--muted);margin-top:3px}
+  .dist{margin-left:auto;text-align:right;flex-shrink:0}
+  .dist .v{font-size:13px;font-weight:700}
+  .dist.in .v{color:var(--ok)} .dist.near .v{color:#B8860B} .dist.far .v{color:var(--bad)}
+  .note{width:100%;font-size:14px;padding:11px 13px;border:1.5px solid var(--line);border-radius:12px;background:#FAFCFE;margin-top:2px}
+  .tl{display:flex;gap:12px;padding:13px 2px;border-bottom:1px solid var(--line);align-items:flex-start}
+  .tl:last-child{border-bottom:none}
+  .tl .ic{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0}
+  .tl .ic.in{background:#E8F8EF} .tl .ic.out{background:#FDEEE3} .tl .ic.auto{background:#F3EDFD}
+  .tl .m{font-size:14px;font-weight:600}
+  .tl .s{font-size:12px;color:var(--muted);margin-top:2px}
+  .pill{margin-left:auto;font-size:11px;font-weight:700;padding:4px 9px;border-radius:99px;flex-shrink:0}
+  .pill.VALID{background:#E8F8EF;color:#1E8E4E}
+  .pill.REVIEW{background:#FEF7DF;color:#9A7B0A}
+  .pill.REJECTED{background:#FDECEC;color:#B3261E}
+  .empty{text-align:center;color:var(--muted);font-size:13.5px;padding:22px 10px}
+  .overlay{position:fixed;inset:0;background:rgba(15,30,48,.45);display:none;align-items:flex-end;justify-content:center;z-index:40}
+  .sheet{background:#fff;width:100%;max-width:480px;border-radius:24px 24px 0 0;padding:26px 22px calc(env(safe-area-inset-bottom) + 30px);text-align:center}
+  .sheet .big{width:64px;height:64px;border-radius:50%;margin:0 auto 14px;display:flex;align-items:center;justify-content:center;font-size:30px}
+  .sheet.ok .big{background:#E8F8EF}.sheet.review .big{background:#FEF7DF}.sheet.bad .big{background:#FDECEC}
+  .sheet h2{font-size:18px;margin-bottom:6px}
+  .sheet p{font-size:13.5px;color:var(--muted);line-height:1.55}
+  .spin{width:44px;height:44px;border:4px solid var(--line);border-top-color:var(--blue);border-radius:50%;
+    margin:0 auto 14px;animation:sp 1s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .gps{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);margin-top:10px;justify-content:center}
+</style>
+</head>
+<body>
+
+<div class="topbar" id="topbar" style="display:none">
+  <div class="brand">
+    <div class="logo">F</div>
+    <div><div class="t1">Absen Karyawan</div><div class="t2">Lumin Park · Faztrack Attendance</div></div>
+  </div>
+  <button class="logout" onclick="logout()">Keluar</button>
+</div>
+
+<div class="content">
+
+  <!-- ============ LOGIN ============ -->
+  <div id="view-login" class="card" style="margin-top:34px">
+    <div style="text-align:center;margin-bottom:6px">
+      <div class="logo" style="width:56px;height:56px;font-size:26px;margin:0 auto 12px">F</div>
+      <h1>Absen Karyawan</h1>
+      <div class="sub">Lumin Park · Masuk dengan kode &amp; PIN</div>
+    </div>
+    <label>Nama kamu</label>
+    <select id="f-worker">
+      <option value="">— Pilih nama —</option>
+      <option value="TKN-APE">Apes</option>
+      <option value="TKN-ALI">Ali</option>
+      <option value="TKN-YUS">Yus</option>
+      <option value="TKN-FER">Ferdi</option>
+      <option value="TKN-RAP">Rapi</option>
+    </select>
+    <label>PIN</label>
+    <input id="f-pin" type="password" inputmode="numeric" maxlength="8" placeholder="PIN absen">
+    <button class="btn btn-primary" onclick="login()">MASUK</button>
+    <div class="err" id="err-login"></div>
+  </div>
+
+  <!-- ============ HOME ============ -->
+  <div id="view-home" style="display:none;flex-direction:column;gap:14px">
+    <div class="card">
+      <h1 id="hello">Halo 👋</h1>
+      <div class="sub" id="dateline"></div>
+      <div id="sched-chip" style="display:inline-flex;margin-top:10px;background:#EFF4FA;color:var(--navy);
+        font-size:12.5px;font-weight:600;padding:7px 12px;border-radius:99px"></div>
+    </div>
+
+    <div class="shiftbanner" id="open-banner" style="display:none">
+      <div class="pulse"></div>
+      <div><div class="a" id="open-name"></div><div class="b" id="open-since"></div></div>
+    </div>
+
+    <div class="seclabel">Pilih lokasi kerja sekarang</div>
+    <div class="card" id="proj-list"></div>
+
+    <div class="card">
+      <label style="margin-top:0">Catatan lokasi (opsional)</label>
+      <input class="note" id="f-note" maxlength="200" placeholder="mis. lantai 2, pagar depan…">
+      <button class="btn btn-primary" id="btn-action" onclick="doAction()">CHECK-IN</button>
+      <div class="gps" id="gps-info">📍 GPS belum aktif — tekan tombol untuk ambil lokasi</div>
+      <div class="err" id="err-home"></div>
+    </div>
+
+    <div class="seclabel">Riwayat hari ini</div>
+    <div class="card" id="timeline"><div class="empty">Belum ada absen hari ini.</div></div>
+  </div>
+</div>
+
+<!-- ============ SHEET HASIL ============ -->
+<div class="overlay" id="ov">
+  <div class="sheet" id="sheet">
+    <div id="sh-spin-wrap"><div class="spin"></div></div>
+    <div class="big" id="sh-big" style="display:none">✓</div>
+    <h2 id="sh-title"></h2>
+    <p id="sh-body"></p>
+    <button class="btn btn-outline" id="sh-btn" style="display:none" onclick="closeSheet()">OK</button>
+  </div>
+</div>
+
+<script>
+const API='/api/v1/worker-web';
+let token=sessionStorage.getItem('tk')||null;
+let me=JSON.parse(sessionStorage.getItem('me')||'null');
+let shift=null, selProject=null, lastFix=null;
+
+const $=id=>document.getElementById(id);
+
+function showErr(id,msg){const e=$(id);e.textContent=msg;e.style.display='block'}
+function hideErr(id){$(id).style.display='none'}
+
+async function api(path,opts={}){
+  const r=await fetch(API+path,{
+    ...opts,
+    headers:{'Content-Type':'application/json',...(token?{'Authorization':'Bearer '+token}:{}) ,...(opts.headers||{})}
+  });
+  const j=await r.json().catch(()=>({}));
+  if(!r.ok){
+    const code=j.detail&&j.detail.code?j.detail.code:'ERROR';
+    const map={
+      INVALID_CREDENTIALS:'Nama atau PIN salah.',
+      NOT_SCHEDULED_TODAY:'Kamu tidak terjadwal hari ini. Hubungi mandor/admin.',
+      ATTENDANCE_ALREADY_RECORDED:'Kamu sudah check-in di lokasi ini hari ini.',
+      CHECK_IN_REQUIRED:'Kamu belum check-in — tidak bisa check-out.',
+      PROJECT_REQUIRED:'Pilih lokasi kerja dulu.',
+      PROJECT_NOT_FOUND:'Lokasi tidak ditemukan.',
+      ATTENDANCE_CHALLENGE_INVALID:'Sesi absen kedaluwarsa. Coba lagi.'
+    };
+    throw {code,message:map[code]||('Gagal: '+code)};
+  }
+  return j.data!==undefined?j.data:j;
+}
+
+function fmtTime(iso){return new Date(iso).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})}
+
+/* ---------- LOGIN ---------- */
+async function login(){
+  hideErr('err-login');
+  const wc=$('f-worker').value,pin=$('f-pin').value.trim();
+  if(!wc||pin.length<4)return showErr('err-login','Pilih nama dan isi PIN.');
+  try{
+    const d=await api('/login',{method:'POST',body:JSON.stringify({tenant_code:'lumin-park',worker_code:wc,pin})});
+    token=d.access_token;me=d.worker;
+    sessionStorage.setItem('tk',token);sessionStorage.setItem('me',JSON.stringify(me));
+    enterHome();
+  }catch(e){showErr('err-login',e.message)}
+}
+
+function logout(){
+  sessionStorage.clear();token=null;me=null;
+  $('view-home').style.display='none';$('view-login').style.display='block';
+  $('topbar').style.display='none';$('f-pin').value='';
+}
+
+/* ---------- HOME ---------- */
+async function enterHome(){
+  if(!token)return logout();
+  $('view-login').style.display='none';$('view-home').style.display='flex';
+  $('topbar').style.display='block';$('hello').textContent='Halo, '+me.name+' 👋';
+  await refresh();
+}
+
+async function refresh(){
+  try{
+    shift=await api('/shift');
+  }catch(e){showErr('err-home',e.message);return}
+  $('dateline').textContent=new Date().toLocaleDateString('id-ID',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  $('sched-chip').textContent=shift.scheduled?('Jam kerja '+shift.schedule.start+' – '+shift.schedule.end):'Tidak ada jadwal hari ini';
+  renderProjects();renderTimeline();
+}
+
+function renderProjects(){
+  const open=shift.open_shift;
+  $('open-banner').style.display=open?'flex':'none';
+  if(open){
+    $('open-name').textContent='Sedang absen di: '+open.project_name;
+    $('open-since').textContent='Sejak '+fmtTime(open.since)+' WIB';
+  }
+  const wrap=$('proj-list');wrap.innerHTML='';
+  selProject=null;
+  shift.projects.forEach((p,i)=>{
+    const div=document.createElement('div');
+    div.className='proj'+((open&&p.id===open.project_id)||(!open&&i===0)?' sel':'');
+    div.onclick=()=>{wrap.querySelectorAll('.proj').forEach(x=>x.classList.remove('sel'));div.classList.add('sel');selProject=p;updateBtn()};
+    div.innerHTML=`<div class="radio"></div>
+      <div><div class="n">${p.name}</div><div class="d">${p.code}</div></div>
+      <div class="dist" id="dist-${p.id}"><div class="v">— m</div></div>`;
+    wrap.appendChild(div);
+    if(div.classList.contains('sel'))selProject=p;
+  });
+  updateBtn();
+}
+
+function updateBtn(){
+  const b=$('btn-action');const open=shift&&shift.open_shift;
+  if(!selProject){b.disabled=true;b.textContent='PILIH LOKASI';return}
+  b.disabled=false;
+  if(open&&selProject.id===open.project_id){b.className='btn btn-outline';b.textContent='CHECK-OUT (pulang / selesai)'}
+  else if(open){b.className='btn btn-primary';b.textContent='PINDAH KE SINI — AUTO CHECK-OUT TITIK LAMA'}
+  else{b.className='btn btn-primary';b.textContent='CHECK-IN DI LOKASI INI'}
+}
+
+function renderTimeline(){
+  const w=$('timeline');
+  if(!shift.timeline.length){w.innerHTML='<div class="empty">Belum ada absen hari ini.</div>';return}
+  w.innerHTML='';
+  shift.timeline.forEach(t=>{
+    const isAuto=t.auto,isIn=t.event_type==='CHECK_IN';
+    const div=document.createElement('div');div.className='tl';
+    div.innerHTML=`<div class="ic ${isAuto?'auto':(isIn?'in':'out')}">${isAuto?'🔄':(isIn?'⬇':'⬆')}</div>
+      <div><div class="m">${isIn?'Check-in':'Check-out'}${isAuto?' otomatis':''}</div>
+      <div class="s">${fmtTime(t.server_time)} · ${t.project_name}${t.distance_m!=null?' · '+Math.round(t.distance_m)+'m':''}</div></div>
+      <span class="pill ${t.status}">${t.status}</span>`;
+    w.appendChild(div);
+  });
+}
+
+/* ---------- GEO ---------- */
+function getPosition(){
+  return new Promise((res,rej)=>{
+    if(!navigator.geolocation)return rej({message:'HP tidak mendukung GPS.'});
+    navigator.geolocation.getCurrentPosition(
+      pos=>res(pos.coords),
+      err=>rej({message:'GPS gagal: '+(err.message||err.code)+'. Aktifkan lokasi di pengaturan HP.'}),
+      {enableHighAccuracy:true,timeout:15000,maximumAge:0});
+  });
+}
+
+function hav(a,b,c,d){
+  const R=6371000,r=x=>x*Math.PI/180,dLat=r(c-a),dLon=r(d-b);
+  const x=Math.sin(dLat/2)**2+Math.cos(r(a))*Math.cos(r(c))*Math.sin(dLon/2)**2;
+  return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+}
+function paintDistances(fix){
+  shift.projects.forEach(p=>{
+    const el=$('dist-'+p.id);if(!el)return;
+    const d=hav(fix.latitude,fix.longitude,p.latitude,p.longitude);
+    el.firstElementChild.textContent=Math.round(d)+' m';
+    el.className='dist '+(d<=p.radius_m?'in':(d<=p.radius_m+50?'near':'far'));
+  });
+}
+
+/* ---------- ACTION ---------- */
+async function doAction(){
+  hideErr('err-home');
+  const open=shift&&shift.open_shift;
+  const isIn=!open||(selProject.id!==open.project_id);
+  const evType=isIn?'CHECK_IN':'CHECK_OUT';
+  showSheet(null,'Mengambil GPS…');
+  let coords;
+  try{coords=await getPosition()}
+  catch(e){showSheet('bad','GPS Gagal',e.message,true);return}
+  lastFix=coords;paintDistances(coords);
+  $('gps-info').textContent=`📍 Lokasi didapat ±${Math.round(coords.accuracy)}m akurasi`;
+  showSheet(null,'Memproses absen…');
+  try{
+    const chal=await api('/challenge',{method:'POST',body:JSON.stringify({event_type:evType,project_id:selProject.id})});
+    const res=await api('/events',{method:'POST',body:JSON.stringify({
+      challenge_id:chal.challenge_id,challenge:chal.challenge,event_type:evType,
+      project_id:selProject.id,
+      latitude:coords.latitude,longitude:coords.longitude,accuracy_m:coords.accuracy||0,
+      site_note:$('f-note').value.trim()||null})});
+    if(res.status==='VALID')
+      showSheet('ok',(evType==='CHECK_IN'?(open?'Berhasil pindah lokasi!':'Check-in berhasil!'):'Check-out berhasil!'),
+        `${res.project_name}\n${fmtTime(res.server_time)} WIB${res.distance_m!=null?' · ±'+Math.round(res.distance_m)+'m dari titik':''}`,true);
+    else if(res.status==='REVIEW')
+      showSheet('review','Terkirim — perlu tinjauan',`${res.reason_code}\nAbsen masuk antrian verifikasi admin.`,true);
+    else
+      showSheet('bad','Absen ditolak',`${res.reason_code||'REJECTED'}\nHubungi admin/mandor.`,true);
+    $('f-note').value='';
+    await refresh();
+  }catch(e){showSheet('bad','Gagal Absen',e.message,true)}
+}
+
+/* ---------- SHEET ---------- */
+function showSheet(kind,title,body,done){
+  $('ov').style.display='flex';
+  $('sh-spin-wrap').style.display=kind?'none':'block';
+  $('sh-big').style.display=kind?'flex':'none';
+  $('sh-btn').style.display=done?'block':'none';
+  const sh=$('sheet');sh.classList.remove('ok','review','bad');if(kind)sh.classList.add(kind);
+  $('sh-big').textContent=kind==='ok'?'✓':(kind==='review'?'⏳':'✕');
+  $('sh-title').textContent=title;$('sh-body').textContent=body;
+}
+function closeSheet(){$('ov').style.display='none'}
+
+/* init */
+if(token&&me){$('f-worker').value=me.code||'';enterHome()}
+</script>
+</body>
+</html>
