@@ -21,7 +21,7 @@ from datetime import date, datetime, time, timezone, timedelta
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 DB_URL = os.environ.get(
@@ -445,9 +445,32 @@ def ensure_exception_case(db: Session, ec_id: str, emp_id: str,
 
 
 # ---------------------------------------------------------------------------
+# Demo-state reset (--reset): hapus state exception yang bisa dimutasi saat
+# rehearsal/demo, supaya reseed menghasilkan kasus fresh status OPEN.
+# Idempoten tanpa flag TETAP terjaga (ensure_* return-early).
+# ---------------------------------------------------------------------------
+RESET_TABLES = [
+    "exception_actions",
+    "exception_evidence",
+    "exception_decisions",
+    "exception_cases",
+]
+
+
+def reset_demo_state() -> None:
+    with engine.begin() as conn:
+        for tbl in RESET_TABLES:
+            res = conn.execute(text(f'DELETE FROM {tbl}'))
+            print(f"  reset: {tbl}: {res.rowcount} row dihapus")
+
+
+# ---------------------------------------------------------------------------
 # Main seed
 # ---------------------------------------------------------------------------
 def seed():
+    if "--reset" in sys.argv:
+        print("== RESET demo state ==")
+        reset_demo_state()
     counts = {}
     db = SessionLocal()
     try:
