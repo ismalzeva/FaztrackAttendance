@@ -396,9 +396,10 @@ def seed():
         counts["tenant"] = 1
 
         # ── Users & Memberships ─────────────────────────────────────────
-        admin = ensure_user(db, "lumin-admin-001", "admin@lumin.id",
+        # Login ID mengikuti tombol quick-fill di FE Lumin (@luminpark.id).
+        admin = ensure_user(db, "lumin-admin-001", "admin@luminpark.id",
                             "Admin Lumin")
-        sup = ensure_user(db, "lumin-sup-001", "supervisor@lumin.id",
+        sup = ensure_user(db, "lumin-sup-001", "supervisor@luminpark.id",
                           "Supervisor Lumin")
         admin_mem = ensure_membership(db, admin.id, RoleCode.OWNER)
         sup_mem = ensure_membership(db, sup.id, RoleCode.SUPERVISOR)
