@@ -208,7 +208,7 @@ class AttendanceEvent(Base):
     longitude: Mapped[float]=mapped_column(Float)
     accuracy_m: Mapped[float]=mapped_column(Float)
     distance_m: Mapped[float]=mapped_column(Float)
-    signature: Mapped[str]=mapped_column(Text)
+    signature: Mapped[str | None]=mapped_column(Text,nullable=True)
     site_note: Mapped[str | None]=mapped_column(String(200),nullable=True)
     reviewed_at: Mapped[datetime | None]=mapped_column(DateTime(timezone=True),nullable=True)
     reviewed_by: Mapped[str | None]=mapped_column(ForeignKey("users.id"),nullable=True)
