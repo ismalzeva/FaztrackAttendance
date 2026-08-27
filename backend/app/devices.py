@@ -71,12 +71,23 @@ def approve(enrollment_id: str,body: EnrollmentDecision,request: Request,ctx: Re
     enrollment=enrollment_for_approver(enrollment_id,ctx,db); now=datetime.now(timezone.utc)
     active=db.scalars(select(DeviceBinding).where(DeviceBinding.tenant_id==ctx.membership.tenant_id,DeviceBinding.worker_id==enrollment.worker_id,DeviceBinding.status==DeviceStatus.ACTIVE)).all()
     for binding in active: binding.status=DeviceStatus.REVOKED; binding.revoked_at=now; binding.revoked_by=ctx.user.id; binding.revoke_reason="DEVICE_REPLACED"
+    # D5 — deteksi satu-HP-dua-orang: thumbprint kunci publik yang SAMA sudah
+    # terdaftar ACTIVE untuk worker LAIN. Ini sinyal titip absen (1 HP dipakai
+    # 2+ orang). Tidak memblokir (bisa jadi HP cadangan sah), tapi di-flag ke
+    # supervisor lewat `shared_device_warning` + audit.
+    shared=db.scalars(select(DeviceBinding).where(DeviceBinding.tenant_id==ctx.membership.tenant_id,DeviceBinding.public_key_thumbprint==enrollment.public_key_thumbprint,DeviceBinding.worker_id!=enrollment.worker_id,DeviceBinding.status==DeviceStatus.ACTIVE)).all()
     others=db.scalars(select(DeviceEnrollment).where(DeviceEnrollment.tenant_id==ctx.membership.tenant_id,DeviceEnrollment.worker_id==enrollment.worker_id,DeviceEnrollment.status==EnrollmentStatus.PENDING,DeviceEnrollment.id!=enrollment.id)).all()
     for other in others: other.status=EnrollmentStatus.SUPERSEDED; other.reviewed_at=now; other.reviewed_by=ctx.user.id
     enrollment.status=EnrollmentStatus.APPROVED; enrollment.reviewed_at=now; enrollment.reviewed_by=ctx.user.id
     db.add(DeviceBinding(tenant_id=enrollment.tenant_id,worker_id=enrollment.worker_id,enrollment_id=enrollment.id,public_key_jwk=enrollment.public_key_jwk,public_key_thumbprint=enrollment.public_key_thumbprint,device_label=enrollment.device_label,status=DeviceStatus.ACTIVE))
-    record_audit(db,tenant_id=enrollment.tenant_id,actor_user_id=ctx.user.id,action="DEVICE_ENROLLMENT_APPROVED",entity_type="device_enrollment",entity_id=enrollment.id,correlation_id=request.state.correlation_id,reason=body.reason); db.commit()
-    return envelope({"enrollment_id":enrollment.id,"status":"APPROVED","replaced_devices":len(active)},request)
+    record_audit(db,tenant_id=enrollment.tenant_id,actor_user_id=ctx.user.id,action="DEVICE_ENROLLMENT_APPROVED",entity_type="device_enrollment",entity_id=enrollment.id,correlation_id=request.state.correlation_id,reason=body.reason)
+    resp={"enrollment_id":enrollment.id,"status":"APPROVED","replaced_devices":len(active)}
+    if shared:
+        other_codes=db.scalars(select(Worker.code).where(Worker.tenant_id==ctx.membership.tenant_id,Worker.id.in_([b.worker_id for b in shared]))).all()
+        record_audit(db,tenant_id=enrollment.tenant_id,actor_user_id=ctx.user.id,action="DEVICE_SHARED_ACROSS_WORKERS",entity_type="device_enrollment",entity_id=enrollment.id,correlation_id=request.state.correlation_id,payload={"public_key_thumbprint":enrollment.public_key_thumbprint,"other_worker_ids":[b.worker_id for b in shared]})
+        resp["shared_device_warning"]={"count":len(shared),"other_worker_codes":other_codes}
+    db.commit()
+    return envelope(resp,request)
 
 @router.post("/device-enrollments/{enrollment_id}/reject")
 def reject(enrollment_id: str,body: EnrollmentDecision,request: Request,ctx: RequestContext=Depends(approval_context),db: Session=Depends(get_db)):

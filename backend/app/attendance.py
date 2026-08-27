@@ -26,7 +26,14 @@ def distance_m(lat1,lon1,lat2,lon2):
     radius=6_371_000; p1=math.radians(lat1); p2=math.radians(lat2); dp=math.radians(lat2-lat1); dl=math.radians(lon2-lon1)
     a=math.sin(dp/2)**2+math.cos(p1)*math.cos(p2)*math.sin(dl/2)**2
     return radius*2*math.atan2(math.sqrt(a),math.sqrt(1-a))
-def signed_payload(body: AttendanceSubmitRequest) -> bytes:
+def signed_payload(body) -> bytes:
+    """Canonical JSON yang wajib ditandatangani kunci privat perangkat.
+
+    Format identik untuk alur PWA (`AttendanceSubmitRequest`) dan web ringan
+    (`WebSubmitRequest`) — kedua model punya field yang sama. Field sensitif
+    yang di-enforce: challenge (anti-replay), koordinat & akurasi (anti-spoof),
+    event_type + project_id (anti-alih lokasi).
+    """
     data={"accuracy_m":f"{body.accuracy_m:.1f}","captured_at_client":body.captured_at_client,"challenge":body.challenge,"challenge_id":body.challenge_id,"event_type":body.event_type,"latitude":f"{body.latitude:.6f}","longitude":f"{body.longitude:.6f}","project_id":body.project_id}
     return json.dumps(data,separators=(",",":"),sort_keys=True).encode()
 def attendance_status(project: Project,lat: float,lon: float,accuracy: float):

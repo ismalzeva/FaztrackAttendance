@@ -3,6 +3,8 @@
 Idempotent. Tidak menampilkan kredensial.
 """
 import hashlib
+import json
+import os
 import secrets
 import sys
 
@@ -16,6 +18,7 @@ import datetime as dt
 
 TENANT_ID = "lumin-park-001"
 TENANT_CODE = "lumin-park"
+PINFILE = os.path.join(os.path.dirname(__file__), "..", "lumin_pins.json")
 
 WORKERS = [
     ("TKN-APE", "Apes", "083186049749"),
@@ -37,9 +40,18 @@ def hash_pin(pin: str) -> str:
     return hash_password(pin)
 
 
+def load_unique_pins() -> dict[str, str]:
+    """Baca PIN unik per worker dari lumin_pins.json (mode 600, tidak di-commit)."""
+    try:
+        with open(PINFILE) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return {}
+
+
 def main() -> None:
-    pin = get_settings().demo_worker_pin
-    assert pin, "FAZTRACK_DEMO_WORKER_PIN tidak tersedia di environment"
+    default_pin = get_settings().demo_worker_pin
+    unique_pins = load_unique_pins()
 
     db = SessionLocal()
     try:
@@ -62,13 +74,16 @@ def main() -> None:
         today = dt.date.today()
         for code, name, phone in WORKERS:
             w = db.scalar(select(Worker).where(Worker.tenant_id == TENANT_ID, Worker.code == code))
+            unique = unique_pins.get(code) or default_pin
+            assert unique, f"PIN untuk {code} tidak tersedia (lumin_pins.json / FAZTRACK_DEMO_WORKER_PIN)"
             if not w:
                 w = Worker(tenant_id=TENANT_ID, code=code, name=name, phone=phone,
-                           pin_hash=hash_pin(pin))
+                           pin_hash=hash_pin(unique))
                 db.add(w)
                 db.flush()
                 print(f"+ worker {code} {name}")
-            w.pin_hash = w.pin_hash or hash_pin(pin)
+            # PIN unik per worker: re-hash tiap run agar idempotent & konsisten dengan lumin_pins.json
+            w.pin_hash = hash_pin(unique)
             if not db.scalar(select(Assignment).where(Assignment.worker_id == w.id,
                                                       Assignment.work_date == today)):
                 base_project = proj_ids["RUMAH-BLK-B2"]

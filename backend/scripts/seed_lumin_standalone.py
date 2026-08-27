@@ -185,9 +185,12 @@ def norm_phone(raw) -> str | None:
 def ensure_worker(db: Session, wid: str, code: str, name: str, phone=None) -> Worker:
     w = get_or_none(db, Worker, id=wid)
     if w:
+        if not w.pin_hash:
+            w.pin_hash = hash_password("1234")
         return w
     w = Worker(id=wid, tenant_id=TENANT_ID, code=code, name=name,
-               phone=norm_phone(phone), is_active=True)
+               phone=norm_phone(phone), is_active=True,
+               pin_hash=hash_password("1234"))
     db.add(w); db.flush()
     return w
 

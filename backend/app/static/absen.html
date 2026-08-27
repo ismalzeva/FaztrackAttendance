@@ -130,6 +130,17 @@
     <div class="err" id="err-login"></div>
   </div>
 
+  <!-- ============ DEVICE (pendaftaran HP anti-titip) ============ -->
+  <div id="view-device" class="card" style="margin-top:34px;display:none;text-align:center">
+    <div style="font-size:54px;margin:8px 0 6px">🔐</div>
+    <h1 id="dev-title">Daftarkan HP Ini</h1>
+    <div class="sub" id="dev-sub" style="line-height:1.55;margin-top:10px"></div>
+    <div id="dev-wait" style="display:none;margin-top:16px;background:#FEF7DF;color:#9A7B0A;font-size:13px;padding:12px 13px;border-radius:11px">⏳ Menunggu persetujuan mandor / admin.</div>
+    <button class="btn btn-primary" id="dev-cta" onclick="enroll()">DAFTARKAN HP INI</button>
+    <button class="btn btn-outline" style="margin-top:10px" onclick="refreshDevice()">CEK STATUS</button>
+    <div class="err" id="err-device"></div>
+  </div>
+
   <!-- ============ HOME ============ -->
   <div id="view-home" style="display:none;flex-direction:column;gap:14px">
     <div class="card">
@@ -173,6 +184,7 @@
 
 <script>
 const API='/api/v1/worker-web';
+const APIV1='/api/v1';
 let token=sessionStorage.getItem('tk')||null;
 let me=JSON.parse(sessionStorage.getItem('me')||'null');
 let shift=null, selProject=null, lastFix=null;
@@ -182,29 +194,167 @@ const $=id=>document.getElementById(id);
 function showErr(id,msg){const e=$(id);e.textContent=msg;e.style.display='block'}
 function hideErr(id){$(id).style.display='none'}
 
+const ERRMAP={
+  INVALID_CREDENTIALS:'Nama atau PIN salah.',
+  NO_ACTIVE_DEVICE:'Perangkat belum didaftarkan / disetujui mandor.',
+  NOT_SCHEDULED_TODAY:'Kamu tidak terjadwal hari ini. Hubungi mandor/admin.',
+  ATTENDANCE_ALREADY_RECORDED:'Kamu sudah check-in di lokasi ini hari ini.',
+  CHECK_IN_REQUIRED:'Kamu belum check-in — tidak bisa check-out.',
+  PROJECT_REQUIRED:'Pilih lokasi kerja dulu.',
+  PROJECT_NOT_FOUND:'Lokasi tidak ditemukan.',
+  ATTENDANCE_CHALLENGE_INVALID:'Sesi absen kedaluwarsa. Coba lagi.',
+  ATTENDANCE_PAYLOAD_MISMATCH:'Data absen tidak cocok. Coba lagi.',
+  INVALID_ATTENDANCE_SIGNATURE:'Kunci perangkat tidak cocok. Daftarkan ulang HP ini.',
+  INVALID_CLIENT_TIME:'Waktu HP tidak valid.',
+  CHALLENGE_INVALID_OR_EXPIRED:'Sesi pendaftaran kedaluwarsa. Coba lagi.',
+  CHALLENGE_MISMATCH:'Validasi perangkat gagal. Coba lagi.',
+  INVALID_DEVICE_PROOF:'Kunci perangkat tidak valid.',
+  TENANT_NOT_FOUND:'Perusahaan tidak ditemukan.'
+};
+
 async function api(path,opts={}){
-  const r=await fetch(API+path,{
+  return _request(API+path,opts);
+}
+
+async function apiV1(path,opts={}){
+  return _request(APIV1+path,opts);
+}
+
+async function _request(url,opts={}){
+  const r=await fetch(url,{
     ...opts,
     headers:{'Content-Type':'application/json',...(token?{'Authorization':'Bearer '+token}:{}) ,...(opts.headers||{})}
   });
   const j=await r.json().catch(()=>({}));
   if(!r.ok){
     const code=j.detail&&j.detail.code?j.detail.code:'ERROR';
-    const map={
-      INVALID_CREDENTIALS:'Nama atau PIN salah.',
-      NOT_SCHEDULED_TODAY:'Kamu tidak terjadwal hari ini. Hubungi mandor/admin.',
-      ATTENDANCE_ALREADY_RECORDED:'Kamu sudah check-in di lokasi ini hari ini.',
-      CHECK_IN_REQUIRED:'Kamu belum check-in — tidak bisa check-out.',
-      PROJECT_REQUIRED:'Pilih lokasi kerja dulu.',
-      PROJECT_NOT_FOUND:'Lokasi tidak ditemukan.',
-      ATTENDANCE_CHALLENGE_INVALID:'Sesi absen kedaluwarsa. Coba lagi.'
-    };
-    throw {code,message:map[code]||('Gagal: '+code)};
+    throw {code,message:ERRMAP[code]||('Gagal: '+code)};
   }
   return j.data!==undefined?j.data:j;
 }
 
 function fmtTime(iso){return new Date(iso).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})}
+
+/* ---------- DEVICE BINDING (WebCrypto ECDSA P-256 + IndexedDB) ---------- */
+const TE=new TextEncoder();
+let keyCache=null;
+function openDB(){
+  return new Promise((res,rej)=>{
+    const rq=indexedDB.open('faztrack-device',1);
+    rq.onupgradeneeded=()=>{if(!rq.result.objectStoreNames.contains('keys'))rq.result.createObjectStore('keys')};
+    rq.onsuccess=()=>res(rq.result);
+    rq.onerror=()=>rej(rq.error);
+  });
+}
+async function saveKey(rec){
+  const db=await openDB();
+  return new Promise((res,rej)=>{
+    const tx=db.transaction('keys','readwrite');
+    tx.objectStore('keys').put(rec,'keypair');
+    tx.oncomplete=()=>{db.close();res()};
+    tx.onerror=()=>{db.close();rej(tx.error)};
+  });
+}
+async function loadKey(){
+  const db=await openDB();
+  return new Promise((res,rej)=>{
+    const tx=db.transaction('keys','readonly');
+    const rq=tx.objectStore('keys').get('keypair');
+    rq.onsuccess=()=>{db.close();res(rq.result||null)};
+    rq.onerror=()=>{db.close();rej(rq.error)};
+  });
+}
+function b64url(buf){
+  const bytes=new Uint8Array(buf);let s='';
+  for(let i=0;i<bytes.length;i++)s+=String.fromCharCode(bytes[i]);
+  return btoa(s).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function b64urlToBytes(str){
+  str=str.replace(/-/g,'+').replace(/_/g,'/');
+  while(str.length%4)str+='=';
+  const bin=atob(str);const bytes=new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+  return bytes;
+}
+async function ensureKeyPair(){
+  if(keyCache)return keyCache;
+  let rec=await loadKey();
+  if(!rec){
+    const kp=await crypto.subtle.generateKey({name:'ECDSA',namedCurve:'P-256'},true,['sign','verify']);
+    const publicJwk=await crypto.subtle.exportKey('jwk',kp.publicKey);
+    rec={privateKey:kp.privateKey,publicJwk};
+    await saveKey(rec);
+  }
+  keyCache=rec;
+  return rec;
+}
+async function signBytes(priv,bytes){
+  const sig=await crypto.subtle.sign({name:'ECDSA',hash:'SHA-256'},priv,bytes);
+  return b64url(sig);
+}
+function canonicalPayload(b){
+  // Wajib identik byte-per-byte dgn app.attendance.signed_payload (sort_keys, no space).
+  const data={
+    accuracy_m:b.accuracy_m.toFixed(1),
+    captured_at_client:b.captured_at_client,
+    challenge:b.challenge,
+    challenge_id:b.challenge_id,
+    event_type:b.event_type,
+    latitude:b.latitude.toFixed(6),
+    longitude:b.longitude.toFixed(6),
+    project_id:b.project_id
+  };
+  const keys=Object.keys(data).sort();
+  let out='';
+  for(let i=0;i<keys.length;i++){if(i)out+=',';out+=JSON.stringify(keys[i])+':'+JSON.stringify(data[keys[i]]);}
+  return '{'+out+'}';
+}
+
+/* ---------- ENROLL DEVICE ---------- */
+async function enroll(){
+  hideErr('err-device');
+  showSheet(null,'Menyiapkan kunci perangkat…');
+  try{
+    const rec=await ensureKeyPair();
+    const ch=await apiV1('/worker/device-enrollment/challenge',{method:'POST'});
+    const sig=await signBytes(rec.privateKey,b64urlToBytes(ch.challenge));
+    await apiV1('/worker/device-enrollment/requests',{
+      method:'POST',
+      headers:{'X-Device-Challenge':ch.challenge},
+      body:JSON.stringify({challenge_id:ch.challenge_id,public_key_jwk:rec.publicJwk,signature:sig,device_label:'HP '+(me?me.name:'')})
+    });
+    closeSheet();
+    await checkDeviceAndRoute();
+  }catch(e){showSheet('bad','Gagal Mendaftarkan HP',e.message,true)}
+}
+
+async function checkDeviceAndRoute(){
+  const dev=await api('/device');
+  if(dev.enrolled){
+    $('view-device').style.display='none';
+    $('view-home').style.display='flex';
+    await refresh();
+  }else{
+    $('view-home').style.display='none';
+    $('view-device').style.display='block';
+    if(dev.enrollment_status==='PENDING'){
+      $('dev-title').textContent='Menunggu Persetujuan Mandor';
+      $('dev-sub').textContent='Permintaan pendaftaran HP kamu sudah terkirim. Minta mandor/admin menyetujuinya, lalu tekan "CEK STATUS".';
+      $('dev-cta').style.display='none';
+      $('dev-wait').style.display='block';
+    }else{
+      $('dev-title').textContent='Daftarkan HP Ini';
+      $('dev-sub').textContent='Untuk mencegah titip absen, setiap absen hanya bisa dari HP yang sudah didaftarkan & disetujui mandor. HP kamu akan diberi kunci keamanan unik yang hanya ada di HP ini.';
+      $('dev-cta').style.display='block';
+      $('dev-cta').textContent='DAFTARKAN HP INI';
+      $('dev-wait').style.display='none';
+    }
+  }
+}
+function refreshDevice(){
+  showSheet(null,'Memeriksa status HP…');
+  checkDeviceAndRoute().then(closeSheet).catch(e=>{closeSheet();showErr('err-device',e.message)});
+}
 
 /* ---------- LOGIN ---------- */
 async function login(){
@@ -228,9 +378,11 @@ function logout(){
 /* ---------- HOME ---------- */
 async function enterHome(){
   if(!token)return logout();
-  $('view-login').style.display='none';$('view-home').style.display='flex';
+  $('view-login').style.display='none';
+  $('view-device').style.display='none';
   $('topbar').style.display='block';$('hello').textContent='Halo, '+me.name+' 👋';
-  await refresh();
+  try{await checkDeviceAndRoute()}
+  catch(e){$('topbar').style.display='none';$('view-login').style.display='block';showErr('err-login',e.message)}
 }
 
 async function refresh(){
@@ -327,12 +479,18 @@ async function doAction(){
   $('gps-info').textContent=`📍 Lokasi didapat ±${Math.round(coords.accuracy)}m akurasi`;
   showSheet(null,'Memproses absen…');
   try{
+    const lat=Number(coords.latitude.toFixed(6));
+    const lon=Number(coords.longitude.toFixed(6));
+    const acc=Number((coords.accuracy||1).toFixed(1));
+    const captured=new Date().toISOString();
     const chal=await api('/challenge',{method:'POST',body:JSON.stringify({event_type:evType,project_id:selProject.id})});
+    const payloadBody={challenge_id:chal.challenge_id,challenge:chal.challenge,event_type:evType,
+      project_id:selProject.id,latitude:lat,longitude:lon,accuracy_m:acc,captured_at_client:captured};
+    // tandatangani payload kanonik dgn kunci privat perangkat (anti titip / HP lain)
+    const rec=await ensureKeyPair();
+    const signature=await signBytes(rec.privateKey,TE.encode(canonicalPayload(payloadBody)));
     const res=await api('/events',{method:'POST',body:JSON.stringify({
-      challenge_id:chal.challenge_id,challenge:chal.challenge,event_type:evType,
-      project_id:selProject.id,
-      latitude:coords.latitude,longitude:coords.longitude,accuracy_m:coords.accuracy||0,
-      site_note:$('f-note').value.trim()||null})});
+      ...payloadBody,signature,site_note:$('f-note').value.trim()||null})});
     if(res.status==='VALID')
       showSheet('ok',(evType==='CHECK_IN'?(open?'Berhasil pindah lokasi!':'Check-in berhasil!'):'Check-out berhasil!'),
         `${res.project_name}\n${fmtTime(res.server_time)} WIB${res.distance_m!=null?' · ±'+Math.round(res.distance_m)+'m dari titik':''}`,true);

@@ -54,3 +54,44 @@ def test_new_device_approval_revokes_previous_binding(client,seeded,db):
     first,_,_,_=submit_enrollment(client,token,"Android Lama"); client.post(f"/api/v1/device-enrollments/{first.json()['data']['enrollment_id']}/approve",headers=admin,json={})
     second,_,_,_=submit_enrollment(client,token,"Android Baru"); result=client.post(f"/api/v1/device-enrollments/{second.json()['data']['enrollment_id']}/approve",headers=admin,json={}); assert result.status_code==200; assert result.json()["data"]["replaced_devices"]==1
     bindings=db.scalars(select(DeviceBinding).where(DeviceBinding.worker_id==worker.id)).all(); assert len(bindings)==2; assert sum(item.status==DeviceStatus.ACTIVE for item in bindings)==1
+
+def make_key_signer():
+    """Generate ONE ECDSA keypair; return (jwk, sign(challenge_b64)->signature)."""
+    private=ec.generate_private_key(ec.SECP256R1()); numbers=private.public_key().public_numbers()
+    jwk={"kty":"EC","crv":"P-256","x":b64(numbers.x.to_bytes(32,"big")),"y":b64(numbers.y.to_bytes(32,"big")),"ext":True}
+    def sign(challenge_b64):
+        raw=base64.urlsafe_b64decode(challenge_b64+"="*((4-len(challenge_b64)%4)%4))
+        der=private.sign(raw,ec.ECDSA(hashes.SHA256())); r,s=decode_dss_signature(der)
+        return b64(r.to_bytes(32,"big")+s.to_bytes(32,"big"))
+    return jwk,sign
+
+def _submit_with_key(client, token, jwk, sign, label):
+    headers={"Authorization":f"Bearer {token}"}
+    ch=client.post("/api/v1/worker/device-enrollment/challenge",headers=headers).json()["data"]
+    resp=client.post("/api/v1/worker/device-enrollment/requests",headers={**headers,"X-Device-Challenge":ch["challenge"]},json={"challenge_id":ch["challenge_id"],"public_key_jwk":jwk,"signature":sign(ch["challenge"]),"device_label":label})
+    return resp
+
+def test_shared_device_across_workers_is_flagged(client,seeded,db):
+    """D5 — 1 HP (kunci sama) didaftarkan 2 pekerja berbeda → flag risiko ke supervisor."""
+    tenant,_,_,_=seeded
+    wa=Worker(tenant_id=tenant.id,code="EMP-A",name="Ali",pin_hash=hash_password("246810")); db.add(wa); db.commit()
+    wb=Worker(tenant_id=tenant.id,code="EMP-B",name="Budi",pin_hash=hash_password("246810")); db.add(wb); db.commit()
+    admin=admin_headers(client,tenant)
+    jwk,sign=make_key_signer()
+
+    # A mendaftarkan HP ini (kunci K)
+    token_a=worker_token(client,tenant,wa).json()["data"]["access_token"]
+    ra=_submit_with_key(client,token_a,jwk,sign,"HP Titipan"); assert ra.status_code==200
+    ea=ra.json()["data"]["enrollment_id"]
+    client.post(f"/api/v1/device-enrollments/{ea}/approve",headers=admin,json={})
+
+    # B mendaftarkan HP yang SAMA (kunci K identik → thumbprint sama)
+    token_b=worker_token(client,tenant,wb).json()["data"]["access_token"]
+    rb=_submit_with_key(client,token_b,jwk,sign,"HP Titipan"); assert rb.status_code==200
+    eb=rb.json()["data"]["enrollment_id"]
+    resp=client.post(f"/api/v1/device-enrollments/{eb}/approve",headers=admin,json={})
+    assert resp.status_code==200
+    body=resp.json()["data"]
+    assert body.get("shared_device_warning"), "harus ada flag shared_device_warning"
+    assert body["shared_device_warning"]["count"]==1
+    assert body["shared_device_warning"]["other_worker_codes"]==["EMP-A"]

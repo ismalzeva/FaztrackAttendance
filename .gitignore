@@ -42,6 +42,9 @@ frontend.backup-before-ui-fix/
 *.tmp
 *.tar.gz
 
+# Demo worker PIN map (unique per-worker credentials)
+lumin_pins.json
+
 # Operating system and editor
 .DS_Store
 .vscode/

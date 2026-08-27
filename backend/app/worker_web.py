@@ -1,11 +1,18 @@
 """Worker self-service endpoints untuk halaman web absen karyawan.
 
-Alur: login PIN (tanpa device) -> lihat shift hari ini -> absen.
-Device enrollment + signature kripto tetap dipakai oleh PWA penuh;
-web ringan ini memakai session token yang hanya aktif setelah verifikasi
-PIN, dan setiap submit tetap melewati challenge (anti-replay) + geofence.
+Alur anti-titip-absen (2 faktor):
+1. Login PIN         -> faktor pengetahuan (PIN unik per karyawan).
+2. Device binding    -> faktor kepemilikan: HP karyawan mendaftarkan kunci
+   publik ECDSA P-256 (via /api/v1/worker/device-enrollment/*) dan disetujui
+   supervisor. Setelah aktif, tiap challenge + absen WAJIB ditandatangani
+   kunci privat yang hanya ada di perangkat tersebut. HP lain (HP teman)
+   tidak bisa absen karena tidak punya kunci privatnya.
+
+Mekanisme kripto-nya identik dengan alur PWA penuh (`app/attendance.py`),
+hanya kontrak endpoint-nya yang ringan untuk web.
 """
 import hashlib
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 
@@ -14,12 +21,14 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.attendance import attendance_status, distance_m, envelope, work_date_for
+from app.attendance import attendance_status, envelope, signed_payload, work_date_for
 from app.database import get_db
 from app.dependencies import WorkerContext, worker_context
+from app.device_crypto import b64url_decode, b64url_encode, verify_signature
 from app.models import (Assignment, AttendanceChallenge, AttendanceEvent,
                         AttendanceStatus, AttendanceType, DeviceBinding,
-                        DeviceStatus, Project, Tenant, WorkSchedule, Worker)
+                        DeviceEnrollment, DeviceStatus, EnrollmentStatus,
+                        Project, Tenant, WorkSchedule, Worker)
 from app.schemas import AttendanceChallengeRequest
 
 router=APIRouter(prefix="/api/v1/worker-web",tags=["worker-web"])
@@ -39,6 +48,8 @@ class WebSubmitRequest(BaseModel):
     latitude: float
     longitude: float
     accuracy_m: float
+    captured_at_client: str
+    signature: str
     site_note: str | None = None
 
 
@@ -51,6 +62,22 @@ def web_login(body: WebLoginRequest,request: Request,db: Session=Depends(get_db)
     if not worker or not worker.pin_hash or not verify_password(body.pin,worker.pin_hash):
         raise HTTPException(401,detail={"code":"INVALID_CREDENTIALS"})
     return envelope({"access_token":create_worker_token(worker.id,tenant.id),"worker":{"code":worker.code,"name":worker.name}},request)
+
+
+@router.get("/device")
+def device_status(request: Request,ctx: WorkerContext=Depends(worker_context),db: Session=Depends(get_db)):
+    """Status device binding karyawan. Frontend pakai ini untuk menentukan:
+    - enrolled=false + enrollment_status=null  -> minta daftarkan HP ini
+    - enrolled=false + enrollment_status=PENDING -> tunggu persetujuan supervisor
+    - enrolled=true                            -> HP sah, bisa absen
+    """
+    binding=db.scalar(select(DeviceBinding).where(DeviceBinding.tenant_id==ctx.tenant_id,DeviceBinding.worker_id==ctx.worker.id,DeviceBinding.status==DeviceStatus.ACTIVE))
+    pending=db.scalar(select(DeviceEnrollment).where(DeviceEnrollment.tenant_id==ctx.tenant_id,DeviceEnrollment.worker_id==ctx.worker.id,DeviceEnrollment.status==EnrollmentStatus.PENDING).order_by(DeviceEnrollment.requested_at.desc()))
+    return envelope({"enrolled":binding is not None,
+        "device_label":binding.device_label if binding else None,
+        "thumbprint":binding.public_key_thumbprint if binding else None,
+        "enrollment_status":pending.status.value if pending else None,
+        "enrollment_id":pending.id if pending else None},request)
 
 
 @router.get("/shift")
@@ -85,8 +112,16 @@ def _open_project_counts(db,ctx,work_date,counted):
     return {k:v for k,v in m.items() if v>0}
 
 
+def _require_active_device(ctx,db) -> DeviceBinding:
+    """Kembalikan DeviceBinding aktif; tolak bila belum ada (anti titip absen)."""
+    binding=db.scalar(select(DeviceBinding).where(DeviceBinding.tenant_id==ctx.tenant_id,DeviceBinding.worker_id==ctx.worker.id,DeviceBinding.status==DeviceStatus.ACTIVE))
+    if not binding: raise HTTPException(409,detail={"code":"NO_ACTIVE_DEVICE","message":"Perangkat belum didaftarkan/disetujui supervisor"})
+    return binding
+
+
 @router.post("/challenge")
 def web_challenge(body: AttendanceChallengeRequest,request: Request,ctx: WorkerContext=Depends(worker_context),db: Session=Depends(get_db)):
+    _require_active_device(ctx,db)
     tenant=db.get(Tenant,ctx.tenant_id); work_date=work_date_for(tenant)
     event_type=AttendanceType(body.event_type)
     counted=[AttendanceStatus.VALID,AttendanceStatus.REVIEW]
@@ -101,16 +136,10 @@ def web_challenge(body: AttendanceChallengeRequest,request: Request,ctx: WorkerC
     project=db.get(Project,target)
     if not project or project.tenant_id!=ctx.tenant_id: raise HTTPException(404,detail={"code":"PROJECT_NOT_FOUND"})
     raw=secrets.token_bytes(32)
-    payload="WEB:"+b64url(raw)
-    item=AttendanceChallenge(tenant_id=ctx.tenant_id,worker_id=ctx.worker.id,project_id=project.id,event_type=event_type,challenge_hash=hashlib.sha256(payload.encode()).hexdigest(),work_date=work_date,expires_at=datetime.now(timezone.utc)+timedelta(minutes=2))
+    item=AttendanceChallenge(tenant_id=ctx.tenant_id,worker_id=ctx.worker.id,project_id=project.id,event_type=event_type,challenge_hash=hashlib.sha256(raw).hexdigest(),work_date=work_date,expires_at=datetime.now(timezone.utc)+timedelta(minutes=2))
     db.add(item); db.commit()
-    return envelope({"challenge_id":item.id,"challenge":"WEB:"+b64url(raw),"expires_in":120,"event_type":event_type.value,
+    return envelope({"challenge_id":item.id,"challenge":b64url_encode(raw),"expires_in":120,"event_type":event_type.value,
                      "project":{"id":project.id,"name":project.name,"latitude":project.latitude,"longitude":project.longitude,"radius_m":project.geofence_radius_m}},request)
-
-
-def b64url(value: bytes) -> str:
-    from app.device_crypto import b64url_encode
-    return b64url_encode(value)
 
 
 @router.post("/events")
@@ -118,17 +147,19 @@ def web_submit(body: WebSubmitRequest,request: Request,ctx: WorkerContext=Depend
     tenant=db.get(Tenant,ctx.tenant_id); work_date=work_date_for(tenant)
     ch=db.scalar(select(AttendanceChallenge).where(AttendanceChallenge.id==body.challenge_id,AttendanceChallenge.tenant_id==ctx.tenant_id,AttendanceChallenge.worker_id==ctx.worker.id))
     if not ch or ch.used_at or ch.expires_at.replace(tzinfo=timezone.utc)<datetime.now(timezone.utc): raise HTTPException(409,detail={"code":"ATTENDANCE_CHALLENGE_INVALID"})
-    if hashlib.sha256(body.challenge.encode()).hexdigest()!=ch.challenge_hash: raise HTTPException(409,detail={"code":"ATTENDANCE_PAYLOAD_MISMATCH"})
-    if ch.event_type.value!=body.event_type or ch.project_id!=body.project_id: raise HTTPException(409,detail={"code":"ATTENDANCE_PAYLOAD_MISMATCH"})
+    if ch.event_type.value!=body.event_type or ch.project_id!=body.project_id or hashlib.sha256(b64url_decode(body.challenge)).hexdigest()!=ch.challenge_hash: raise HTTPException(409,detail={"code":"ATTENDANCE_PAYLOAD_MISMATCH"})
+    try: captured=datetime.fromisoformat(body.captured_at_client.replace("Z","+00:00"))
+    except ValueError: raise HTTPException(422,detail={"code":"INVALID_CLIENT_TIME"})
+    binding=_require_active_device(ctx,db)
+    try: verify_signature(json.loads(binding.public_key_jwk),signed_payload(body),body.signature)
+    except ValueError: raise HTTPException(422,detail={"code":"INVALID_ATTENDANCE_SIGNATURE"})
     counted=[AttendanceStatus.VALID,AttendanceStatus.REVIEW]
-    binding=db.scalar(select(DeviceBinding).where(DeviceBinding.tenant_id==ctx.tenant_id,DeviceBinding.worker_id==ctx.worker.id,DeviceBinding.status==DeviceStatus.ACTIVE))
-    captured=datetime.now(timezone.utc)
     if ch.event_type==AttendanceType.CHECK_IN and tenant.allow_multi_checkin:
         for shift in db.scalars(select(AttendanceEvent).where(AttendanceEvent.tenant_id==ctx.tenant_id,AttendanceEvent.worker_id==ctx.worker.id,AttendanceEvent.work_date==work_date,AttendanceEvent.event_type==AttendanceType.CHECK_IN,AttendanceEvent.status.in_(counted))).all():
             if shift.project_id!=ch.project_id and shift.project_id in _open_project_counts(db,ctx,work_date,counted):
-                db.add(AttendanceEvent(tenant_id=ctx.tenant_id,worker_id=ctx.worker.id,project_id=shift.project_id,device_binding_id=binding.id if binding else None,challenge_id=None,event_type=AttendanceType.CHECK_OUT,status=AttendanceStatus.VALID,reason_code="AUTO_CHECKOUT_MOVE_SITE",work_date=work_date,captured_at_client=captured,latitude=body.latitude,longitude=body.longitude,accuracy_m=body.accuracy_m,distance_m=0.0,signature="AUTO-WEB"))
+                db.add(AttendanceEvent(tenant_id=ctx.tenant_id,worker_id=ctx.worker.id,project_id=shift.project_id,device_binding_id=binding.id,challenge_id=None,event_type=AttendanceType.CHECK_OUT,status=AttendanceStatus.VALID,reason_code="AUTO_CHECKOUT_MOVE_SITE",work_date=work_date,captured_at_client=captured,latitude=body.latitude,longitude=body.longitude,accuracy_m=body.accuracy_m,distance_m=0.0,signature="AUTO:"+body.signature))
     status,reason,distance=attendance_status(db.get(Project,ch.project_id),body.latitude,body.longitude,body.accuracy_m)
-    ch.used_at=captured
-    ev=AttendanceEvent(tenant_id=ctx.tenant_id,worker_id=ctx.worker.id,project_id=ch.project_id,device_binding_id=binding.id if binding else None,challenge_id=ch.id,event_type=ch.event_type,status=status,reason_code=reason,work_date=work_date,captured_at_client=captured,latitude=body.latitude,longitude=body.longitude,accuracy_m=body.accuracy_m,distance_m=distance,signature="WEB-SESSION",site_note=(body.site_note or None))
+    ch.used_at=datetime.now(timezone.utc)
+    ev=AttendanceEvent(tenant_id=ctx.tenant_id,worker_id=ctx.worker.id,project_id=ch.project_id,device_binding_id=binding.id,challenge_id=ch.id,event_type=ch.event_type,status=status,reason_code=reason,work_date=work_date,captured_at_client=captured,latitude=body.latitude,longitude=body.longitude,accuracy_m=body.accuracy_m,distance_m=distance,signature=body.signature,site_note=(body.site_note or None))
     db.add(ev); db.commit()
     return envelope({"event_id":ev.id,"status":ev.status.value,"reason_code":ev.reason_code,"distance_m":round(ev.distance_m,1),"project_name":db.get(Project,ch.project_id).name,"server_time":ev.server_time.isoformat()},request)
