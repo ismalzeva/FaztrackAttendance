@@ -260,6 +260,14 @@ def ensure_roster_policy(db: Session, rp_id: str, key: str, value: str,
                          dtype: str, status: str) -> RosterPolicy:
     rp = get_or_none(db, RosterPolicy, id=rp_id)
     if rp:
+        # Converge to the decided value/status (so re-seed corrects stale rows,
+        # e.g. minimum_rest_hours "TBC" -> "1").
+        if rp.policy_value != value or rp.confirmation_status != status or rp.data_type != dtype:
+            rp.policy_key = key
+            rp.policy_value = value
+            rp.data_type = dtype
+            rp.confirmation_status = status
+            db.flush()
         return rp
     rp = RosterPolicy(
         id=rp_id, tenant_id=TENANT_ID,
