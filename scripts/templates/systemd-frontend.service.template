@@ -1,0 +1,17 @@
+[Unit]
+Description=Faztrack Attendance - {{NAME}} Frontend
+After=network.target {{BACKEND_SERVICE}}
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory={{FRONTEND_DIR}}
+Environment=PORT={{FRONTEND_PORT}}
+Environment=NODE_ENV=production
+Environment=HOSTNAME=0.0.0.0
+ExecStart=/usr/bin/node {{FRONTEND_DIR}}/.next/standalone/server.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

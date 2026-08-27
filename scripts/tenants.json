@@ -1,0 +1,56 @@
+{
+  "metaversion": 1,
+  "note": "Faztrack Attendance tenant registry — metadata only, NO secrets. Secrets live in backend/.env.<slug> (mode 0600, gitignored).",
+  "smb_shared": {
+    "container": "faztrack-smb-postgres",
+    "host_port": 5438,
+    "superuser": "smbadmin",
+    "env_file": "backend/.env.smb-postgres"
+  },
+  "tenants": [
+    {
+      "slug": "metro",
+      "name": "Metro Mining",
+      "code": "metro-mining",
+      "tier": "enterprise",
+      "vertical": "mining",
+      "timezone": "Asia/Makassar",
+      "db": {
+        "container": "metro-postgres",
+        "name": "faztrack_attendance_metro",
+        "user": "faztrack_metro",
+        "port": 5436
+      },
+      "backend": { "port": 8084, "service": "faztrack-attendance-metro.service" },
+      "frontend": {
+        "port": 3004,
+        "service": "faztrack-attendance-metro-web.service",
+        "dir": "/home/ubuntu/FaztrackAttendance/frontend"
+      },
+      "status": "active",
+      "created_at": "2026-08-01"
+    },
+    {
+      "slug": "lumin",
+      "name": "Lumin Park Property",
+      "code": "lumin-park",
+      "tier": "enterprise",
+      "vertical": "property",
+      "timezone": "Asia/Jakarta",
+      "db": {
+        "container": "lumin-postgres",
+        "name": "faztrack_attendance_lumin",
+        "user": "faztrack_lumin",
+        "port": 5437
+      },
+      "backend": { "port": 8011, "service": "faztrack-attendance-lumin.service" },
+      "frontend": {
+        "port": 3011,
+        "service": "faztrack-attendance-lumin-web.service",
+        "dir": "/home/ubuntu/lumin-frontend"
+      },
+      "status": "active",
+      "created_at": "2026-08-22"
+    }
+  ]
+}
