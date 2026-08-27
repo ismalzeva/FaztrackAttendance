@@ -81,17 +81,17 @@ def reset_today():
         print(f"WARN: {WORKER_CODE} tidak ditemukan"); conn.close(); return
     wid = row[0]
 
-    # urutan hapus: child (bindings) dulu, lalu enrollments/challenges/attendance
-    cur.execute("DELETE FROM device_bindings WHERE worker_id=%s", (wid,))
-    nb = cur.rowcount
-    cur.execute("DELETE FROM device_enrollments WHERE worker_id=%s", (wid,))
-    ne = cur.rowcount
-    cur.execute("DELETE FROM device_challenges WHERE worker_id=%s", (wid,))
-    nch = cur.rowcount
+    # urutan hapus: parent (events/challenges) dulu, lalu child (bindings/enrollments)
     cur.execute("DELETE FROM attendance_events WHERE worker_id=%s AND work_date=%s", (wid, today))
     nae = cur.rowcount
     cur.execute("DELETE FROM attendance_challenges WHERE worker_id=%s AND work_date=%s", (wid, today))
     nac = cur.rowcount
+    cur.execute("DELETE FROM device_challenges WHERE worker_id=%s", (wid,))
+    nch = cur.rowcount
+    cur.execute("DELETE FROM device_bindings WHERE worker_id=%s", (wid,))
+    nb = cur.rowcount
+    cur.execute("DELETE FROM device_enrollments WHERE worker_id=%s", (wid,))
+    ne = cur.rowcount
 
     # Pastikan jadwal untuk hari ini (upsert — abaikan kalau sudah ada)
     cur.execute(
@@ -177,12 +177,12 @@ s, d = w("/login", {"tenant_code": "lumin-park", "worker_code": WORKER_CODE, "pi
 tok = (unwrap(d) or {}).get("access_token")
 step(f"login {WORKER_NAME} OK (PIN unik)", s == 200 and bool(tok), s)
 
-# ---------- device binding belum ada (faktor kepemilikan harus dipenuhi) ----------
+# ---------- device binding belum ada — challenge tetap jalan (opsional, status REVIEW) ----------
 s, d = w("/device", tok=tok); d = unwrap(d)
 step("device awal: belum terdaftar", s == 200 and d.get("enrolled") is False, (s, d.get("enrolled")))
 
-s, d = w("/challenge", {"event_type": "CHECK_IN"}, tok=tok)
-step("challenge tanpa device ditolak (NO_ACTIVE_DEVICE)", err_code(d) == "NO_ACTIVE_DEVICE", (s, err_code(d)))
+s, d = w("/challenge", {"event_type": "CHECK_IN", "project_id": PROJECT["id"]}, tok=tok)
+step("challenge tanpa device: tetap jalan (opsional)", s == 200, s)
 
 # ---------- ENROLL device (kunci privat dibuat di sisi klien) ----------
 dev = Device()
