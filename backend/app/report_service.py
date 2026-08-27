@@ -1130,6 +1130,9 @@ def export_xlsx(
             if value is None:
                 cell.value = ""
             elif isinstance(value, datetime):
+                # openpyxl rejects timezone-aware datetimes; strip tzinfo.
+                if value.tzinfo is not None:
+                    value = value.replace(tzinfo=None)
                 cell.value = value
                 cell.number_format = dt_format
             elif isinstance(value, date):
