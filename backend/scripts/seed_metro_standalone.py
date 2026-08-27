@@ -54,6 +54,7 @@ from app.models import (
 )
 from app.security import hash_password
 from app.rule_versioning import snapshot_rules
+from app.roster_generator import generate_assignments, read_roster_policy
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -182,7 +183,9 @@ def ensure_worker(db: Session, wid: str, code: str, name: str) -> Worker:
     w = get_or_none(db, Worker, id=wid)
     if w:
         return w
-    w = Worker(id=wid, tenant_id=TENANT_ID, code=code, name=name, is_active=True)
+    w = Worker(id=wid, tenant_id=TENANT_ID, code=code, name=name, is_active=True,
+               pin_hash=hash_password("1234"))
+    # Also update existing workers without pin_hash
     db.add(w)
     db.flush()
     return w
@@ -274,17 +277,25 @@ def ensure_roster_assignment(db: Session, ra_id: str, op_date: date,
                               shift_id: str | None,
                               site_id: str | None,
                               equip_id: str | None,
-                              rule_ver: RuleVersion | None) -> RosterAssignment:
+                              rule_ver: RuleVersion | None,
+                              *,
+                              site_cycle_day: int = 0,
+                              site_status: str | None = None) -> RosterAssignment:
     ra = get_or_none(db, RosterAssignment, id=ra_id)
     if ra:
         return ra
-    site_status = SiteStatusEnum.ONSITE if work_status == WorkStatus.WORK else SiteStatusEnum.OFFSITE
+    if site_status is None:
+        # REST stays ON-SITE (worker is on-site but resting) — only OFFSITE
+        # (out-cycle) is truly off-site.
+        site_status = SiteStatusEnum.OFFSITE if work_status == WorkStatus.OFFSITE else SiteStatusEnum.ONSITE
+    else:
+        site_status = SiteStatusEnum(site_status)
     ra = RosterAssignment(
         id=ra_id, tenant_id=TENANT_ID,
         roster_code=f"ROSTER-{op_date.strftime('%Y%m%d')}",
         operating_date=op_date,
         employee_id=emp_id, crew_id=crew_id,
-        site_cycle_day=0, site_status=site_status,
+        site_cycle_day=site_cycle_day, site_status=site_status,
         work_status=work_status,
         shift_id=shift_id, site_id=site_id,
         planned_equipment_id=equip_id,
@@ -596,9 +607,16 @@ def seed():
         # ── Roster Policies ─────────────────────────────────────────────
         ensure_roster_policy(db, "rp-equip", "equipment_assignment_enabled", "true", "boolean", "CONFIRMED")
         ensure_roster_policy(db, "rp-comp",  "competency_validation_enabled", "true", "boolean", "CONFIRMED")
-        ensure_roster_policy(db, "rp-rest",  "minimum_rest_hours", "TBC", "integer", "TBC")
-        ensure_roster_policy(db, "rp-geo",   "geofence_radius_m", "TBC", "integer", "TBC")
-        counts["roster_policies"] = 4
+        ensure_roster_policy(db, "rp-rest",  "minimum_rest_hours", "1", "integer", "CONFIRMED")
+        ensure_roster_policy(db, "rp-geo",   "geofence_radius_m", "", "integer", "TBC")
+
+        # Cycle / rest / shift rules — Decisions D4–D8 (docs/TBC_REGISTER.md).
+        ensure_roster_policy(db, "rp-maxwork",  "max_consecutive_workdays", "12", "integer", "CONFIRMED")
+        ensure_roster_policy(db, "rp-restdays", "mandatory_rest_days", "1", "integer", "CONFIRMED")
+        ensure_roster_policy(db, "rp-sameshift", "max_same_shift_streak", "7", "integer", "CONFIRMED")
+        ensure_roster_policy(db, "rp-onsite",   "onsite_weeks", "12", "integer", "CONFIRMED")
+        ensure_roster_policy(db, "rp-offsite",  "offsite_weeks", "2", "integer", "CONFIRMED")
+        counts["roster_policies"] = 9
 
         # ── Rule Version ────────────────────────────────────────────────
         rule_ver = snapshot_rules(db, TENANT_ID, "METRO-RULE-v0.1", DEMO_START)
@@ -610,40 +628,70 @@ def seed():
             "w1": ex25.id, "w2": dt14.id, "w3": ex31.id,
             "w4": dt14.id, "w5": ex25.id, "w6": ex31.id,
         }
-        # Worker shift/crew/assignment definitions
-        ra_defs = [
-            # wid, work_status, shift, crew, planned_equip_key or None
-            ("w1",  WorkStatus.WORK,   day_shift.id,   crew_a.id, "w1"),
-            ("w2",  WorkStatus.WORK,   day_shift.id,   crew_a.id, "w2"),
-            ("w3",  WorkStatus.WORK,   day_shift.id,   crew_a.id, "w3"),
-            ("w4",  WorkStatus.WORK,   night_shift.id, crew_b.id, "w4"),
-            ("w5",  WorkStatus.WORK,   night_shift.id, crew_b.id, "w5"),
-            ("w6",  WorkStatus.WORK,   night_shift.id, crew_b.id, "w6"),
-            ("w7",  WorkStatus.WORK,   day_shift.id,   crew_a.id, None),
-            ("w8",  WorkStatus.WORK,   day_shift.id,   crew_a.id, None),
-            ("w9",  WorkStatus.WORK,   night_shift.id, crew_b.id, None),
-            ("w10", WorkStatus.WORK,   night_shift.id, crew_b.id, None),
-            ("w11", WorkStatus.REST,   day_shift.id,   crew_a.id, None),
-            ("w12", WorkStatus.OFFSITE, night_shift.id, crew_b.id, None),
-        ]
+
+        # Per-worker cycle context (crew + cycle offset + equipment key).
+        # The roster is GENUINELY generated from the cycle rules — each worker
+        # is anchored to a different phase of the 98-day cycle on DEMO_START so
+        # the demo snapshot shows the intended operating states:
+        #   offset 0   -> WORK / DAY      (w1..w3, w7, w8)
+        #   offset 8   -> WORK / NIGHT    (w4..w6, w9, w10)
+        #   offset 12  -> REST  (day-13 rest boundary, resets counter)
+        #   offset 84  -> OFFSITE (first day of the 2-week off-site block)
+        worker_cycle = {
+            "w1":  (crew_a.id, 0,  "w1"),
+            "w2":  (crew_a.id, 0,  "w2"),
+            "w3":  (crew_a.id, 0,  "w3"),
+            "w4":  (crew_b.id, 8,  "w4"),
+            "w5":  (crew_b.id, 8,  "w5"),
+            "w6":  (crew_b.id, 8,  "w6"),
+            "w7":  (crew_a.id, 0,  None),
+            "w8":  (crew_a.id, 0,  None),
+            "w9":  (crew_b.id, 8,  None),
+            "w10": (crew_b.id, 8,  None),
+            "w11": (crew_a.id, 12, None),
+            "w12": (crew_b.id, 84, None),
+        }
+
+        shift_id_by_key = {"DAY": day_shift.id, "NIGHT": night_shift.id}
+        ws_by_key = {
+            "WORK": WorkStatus.WORK,
+            "REST": WorkStatus.REST,
+            "OFFSITE": WorkStatus.OFFSITE,
+        }
 
         ra_count = 0
         # Store roster IDs for w1, w2, w4 on 2026-09-01 (needed for operational data)
         roster_ids = {}
-        d = DEMO_START
-        while d <= DEMO_END:
-            ds = d.strftime("%Y%m%d")
-            for wid, ws, sid, cid, eq_key in ra_defs:
+        # Generator consumes integer policy only (minimum_rest_hours is a
+        # validator concern, not a generator input). Reading from the seeded
+        # RosterPolicy rows keeps "output = persis input": the roster is
+        # derived from the configured rules, never re-declared.
+        _GEN_KEYS = (
+            "onsite_weeks", "offsite_weeks",
+            "max_consecutive_workdays", "mandatory_rest_days",
+            "max_same_shift_streak",
+        )
+        policy = {k: v for k, v in read_roster_policy(db, TENANT_ID).items() if k in _GEN_KEYS}
+        for wid, (cid, offset, eq_key) in worker_cycle.items():
+            plans = generate_assignments(DEMO_START, offset, DEMO_START, DEMO_END, **policy)
+            for p in plans:
+                ds = p["date"].strftime("%Y%m%d")
                 ra_id = f"ra-{wid}-{ds}"
-                equip_id = planned_equip.get(eq_key) if eq_key else None
-                ra = ensure_roster_assignment(
-                    db, ra_id, d, workers[wid].id, cid,
-                    ws, sid, site.id, equip_id, rule_ver,
+                ws = ws_by_key[p["work_status"]]
+                shift_id = shift_id_by_key[p["shift_key"]] if p["shift_key"] else None
+                equip_id = (
+                    planned_equip.get(eq_key)
+                    if (p["work_status"] == "WORK" and eq_key) else None
                 )
-                if d == DEMO_START and wid in ("w1", "w2", "w4"):
+                ra = ensure_roster_assignment(
+                    db, ra_id, p["date"], workers[wid].id, cid,
+                    ws, shift_id, site.id, equip_id, rule_ver,
+                    site_status=p["site_status"],
+                    site_cycle_day=p["site_cycle_day"],
+                )
+                if p["date"] == DEMO_START and wid in ("w1", "w2", "w4"):
                     roster_ids[wid] = ra.id
                 ra_count += 1
-            d += timedelta(days=1)
         counts["roster_assignments"] = ra_count
 
         # ── Demo Operational Data (2026-09-01 only) ─────────────────────

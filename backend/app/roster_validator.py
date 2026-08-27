@@ -15,6 +15,7 @@ from app.models import (
     CompetencyStatus, EquipmentStatus,
 )
 from app.models import uid
+from app.roster_generator import read_roster_policy
 
 
 # ─────────────────────────────────────────────────────────────
@@ -391,21 +392,33 @@ def validate_roster_assignment(
     """
     all_exceptions = []
 
+    # Pull cycle/rest/shift limits from the RosterPolicy table (CONFIRMED only),
+    # falling back to the documented defaults (12/7/12/2/1) when unset.
+    policy = read_roster_policy(db, tenant_id)
+    max_work = policy["max_consecutive_workdays"]
+    max_same_shift = policy["max_same_shift_streak"]
+    onsite_weeks = policy["onsite_weeks"]
+    offsite_weeks = policy["offsite_weeks"]
+
     # V1: Max consecutive work
     all_exceptions.extend(validate_max_consecutive_work(
-        db, tenant_id, employee_id, operating_date, work_status, rule_version))
+        db, tenant_id, employee_id, operating_date, work_status, rule_version,
+        max_work=max_work))
 
     # V2: Mandatory rest
     all_exceptions.extend(validate_mandatory_rest(
-        db, tenant_id, employee_id, operating_date, work_status, rule_version))
+        db, tenant_id, employee_id, operating_date, work_status, rule_version,
+        max_work=max_work))
 
     # V3: Max same shift
     all_exceptions.extend(validate_max_same_shift(
-        db, tenant_id, employee_id, operating_date, shift_id, work_status, rule_version))
+        db, tenant_id, employee_id, operating_date, shift_id, work_status, rule_version,
+        max_same_shift=max_same_shift))
 
     # V4: Onsite/offsite cycle
     all_exceptions.extend(validate_onsite_offsite_cycle(
-        db, tenant_id, employee_id, operating_date, site_status, work_status, rule_version))
+        db, tenant_id, employee_id, operating_date, site_status, work_status, rule_version,
+        onsite_weeks=onsite_weeks, offsite_weeks=offsite_weeks))
 
     # V5: No overlap (skip if we're validating an existing row)
     if not skip_existing_check:
