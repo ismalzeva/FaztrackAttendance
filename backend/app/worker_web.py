@@ -64,6 +64,23 @@ def web_login(body: WebLoginRequest,request: Request,db: Session=Depends(get_db)
     return envelope({"access_token":create_worker_token(worker.id,tenant.id),"worker":{"code":worker.code,"name":worker.name}},request)
 
 
+@router.get("/roster")
+def web_roster(request: Request, tenant_code: str, db: Session = Depends(get_db)):
+    """Daftar karyawan aktif untuk dropdown login (pra-auth, tanpa token)."""
+    tenant = db.scalar(select(Tenant).where(Tenant.code == tenant_code))
+    if not tenant:
+        raise HTTPException(404, detail={"code": "TENANT_NOT_FOUND"})
+    workers = db.scalars(
+        select(Worker)
+        .where(Worker.tenant_id == tenant.id, Worker.is_active.is_(True))
+        .order_by(Worker.name)
+    ).all()
+    return envelope(
+        {"workers": [{"code": w.code, "name": w.name} for w in workers]},
+        request,
+    )
+
+
 @router.get("/device")
 def device_status(request: Request,ctx: WorkerContext=Depends(worker_context),db: Session=Depends(get_db)):
     """Status device binding karyawan. Frontend pakai ini untuk menentukan:

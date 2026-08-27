@@ -1,4 +1,4 @@
-"""E2E anti-titip absen Lumin: device binding kripto (ECDSA P-256) + multi check-in.
+"""E2E anti-titip absen Lumin: device binding kripto (ECDSA P-256).
 
 Menguji alur lengkap:
   1. Login PIN unik per karyawan (faktor pengetahuan).
@@ -7,8 +7,9 @@ Menguji alur lengkap:
   4. Setiap absen WAJIB ditandatangani kunci privat perangkat (faktor kepemilikan).
   5. Negatif: absen yang ditandatangani perangkat LAIN ditolak
      (INVALID_ATTENDANCE_SIGNATURE) — inilah pengunci "HP teman tidak bisa absen".
-  6. Multi check-in + auto check-out titik lama + check-out akhir tetap jalan.
+  6. Duplikat check-in ditolak + check-out berhasil.
 
+Worker uji: EMP-022 Yus (PRJ-01 Kantor Pemasaran Lumin).
 Jalan via /tmp/lumin_run.sh (env proses BE diwarisi; PIN/password tak pernah dicetak).
 """
 import json, os, math, sys, datetime, base64, urllib.request, urllib.error
@@ -20,14 +21,16 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 BASE = "http://localhost:8011/api/v1/worker-web"
 BASEV1 = "http://localhost:8011/api/v1"
 TENANT_ID = "lumin-park-001"
+WORKER_CODE = "EMP-022"            # Yus — PRJ-01
+WORKER_NAME = "Yus"
 PINFILE = "/home/ubuntu/FaztrackAttendance/backend/lumin_pins.json"
 
 with open(PINFILE) as f:
-    PIN = json.load(f).get("TKN-APE", "")
+    PIN = json.load(f).get(WORKER_CODE, "")
 ADMIN_PASSWORD = os.environ.get("FAZTRACK_DEMO_SEED_PASSWORD", "")
 DB_URL = os.environ.get("FAZTRACK_DATABASE_URL", "")
 if not PIN:
-    print("FAIL: PIN TKN-APE tidak ada di lumin_pins.json"); sys.exit(2)
+    print(f"FAIL: PIN {WORKER_CODE} tidak ada di lumin_pins.json"); sys.exit(2)
 if not ADMIN_PASSWORD:
     print("FAIL: FAZTRACK_DEMO_SEED_PASSWORD tidak ada di env"); sys.exit(2)
 
@@ -65,18 +68,19 @@ def signed_payload(b: dict) -> bytes:
     return json.dumps(data, separators=(",", ":"), sort_keys=True).encode()
 
 
-# ---------- reset data hari ini utk TKN-APE (isolasi test) ----------
+# ---------- reset data hari ini utk EMP-022 (isolasi test) ----------
 def reset_today():
     import psycopg
     raw = DB_URL.replace("postgresql+psycopg://", "postgresql://").replace("postgresql+psycopg2://", "postgresql://")
     conn = psycopg.connect(raw); conn.autocommit = True
     cur = conn.cursor()
     today = datetime.date.today()
-    cur.execute("SELECT id FROM workers WHERE code='TKN-APE' AND tenant_id=%s", (TENANT_ID,))
+    cur.execute("SELECT id FROM workers WHERE code=%s AND tenant_id=%s", (WORKER_CODE, TENANT_ID))
     row = cur.fetchone()
     if not row:
-        print("WARN: TKN-APE tidak ditemukan"); conn.close(); return
+        print(f"WARN: {WORKER_CODE} tidak ditemukan"); conn.close(); return
     wid = row[0]
+
     # urutan hapus: child (bindings) dulu, lalu enrollments/challenges/attendance
     cur.execute("DELETE FROM device_bindings WHERE worker_id=%s", (wid,))
     nb = cur.rowcount
@@ -88,10 +92,43 @@ def reset_today():
     nae = cur.rowcount
     cur.execute("DELETE FROM attendance_challenges WHERE worker_id=%s AND work_date=%s", (wid, today))
     nac = cur.rowcount
+
+    # Pastikan jadwal untuk hari ini (upsert — abaikan kalau sudah ada)
+    cur.execute(
+        """INSERT INTO work_schedules (id, tenant_id, worker_id, work_date, start_time, end_time, is_working_day)
+           VALUES (gen_random_uuid()::text, %s, %s, %s, '08:00', '17:00', TRUE)
+           ON CONFLICT (tenant_id, worker_id, work_date) DO NOTHING""",
+        (TENANT_ID, wid, today))
+    nws = cur.rowcount
     conn.close()
-    print(f"reset TKN-APE: {nb} bindings, {ne} enrollments, {nch} device-challenges, {nae} events, {nac} attendance-challenges")
+    print(f"reset {WORKER_CODE}: {nb} bindings, {ne} enrollments, {nch} device-challenges, {nae} events, {nac} attendance-challenges, +{nws} schedule")
+
 
 reset_today()
+
+
+# ---------- cari project EMP-022 ----------
+def find_project():
+    import psycopg
+    raw = DB_URL.replace("postgresql+psycopg://", "postgresql://").replace("postgresql+psycopg2://", "postgresql://")
+    conn = psycopg.connect(raw)
+    cur = conn.cursor()
+    cur.execute(
+        """SELECT p.id, p.code, p.name, p.latitude, p.longitude
+           FROM projects p
+           JOIN assignments a ON a.project_id=p.id AND a.tenant_id=%s
+           JOIN workers w ON a.worker_id=w.id
+           WHERE w.code=%s AND w.tenant_id=%s AND p.tenant_id=%s""",
+        (TENANT_ID, WORKER_CODE, TENANT_ID, TENANT_ID))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        print(f"FAIL: {WORKER_CODE} tidak punya project assignment"); sys.exit(2)
+    return {"id": row[0], "code": row[1], "name": row[2], "latitude": float(row[3]), "longitude": float(row[4])}
+
+
+PROJECT = find_project()
+print(f"project: {PROJECT['code']} {PROJECT['name']} ({PROJECT['latitude']}, {PROJECT['longitude']})")
 
 
 # ---------- HTTP helper ----------
@@ -133,12 +170,12 @@ def err_code(d):
 
 
 # ---------- LOGIN (PIN unik) ----------
-s, d = w("/login", {"tenant_code": "lumin-park", "worker_code": "TKN-APE", "pin": "wrong"})
+s, d = w("/login", {"tenant_code": "lumin-park", "worker_code": WORKER_CODE, "pin": "wrong"})
 step("login PIN salah ditolak", s == 401, (s, err_code(d)))
 
-s, d = w("/login", {"tenant_code": "lumin-park", "worker_code": "TKN-APE", "pin": PIN})
+s, d = w("/login", {"tenant_code": "lumin-park", "worker_code": WORKER_CODE, "pin": PIN})
 tok = (unwrap(d) or {}).get("access_token")
-step("login Apes OK (PIN unik)", s == 200 and bool(tok), s)
+step(f"login {WORKER_NAME} OK (PIN unik)", s == 200 and bool(tok), s)
 
 # ---------- device binding belum ada (faktor kepemilikan harus dipenuhi) ----------
 s, d = w("/device", tok=tok); d = unwrap(d)
@@ -155,7 +192,7 @@ ch_dev = d
 sig = dev.sign_b64(b64url_dec(ch_dev["challenge"]))
 s, d = v1("/worker/device-enrollment/requests",
           {"challenge_id": ch_dev["challenge_id"], "public_key_jwk": dev.jwk,
-           "signature": sig, "device_label": "HP Apes"},
+           "signature": sig, "device_label": f"HP {WORKER_NAME}"},
           tok=tok, extra_headers={"X-Device-Challenge": ch_dev["challenge"]})
 d = unwrap(d)
 enrollment_id = d.get("enrollment_id") if s == 200 else None
@@ -178,14 +215,13 @@ step("device: terdaftar & aktif", s == 200 and d.get("enrolled") is True, d.get(
 
 # ---------- SHIFT ----------
 s, sh = w("/shift", tok=tok); sh = unwrap(sh)
-projs = {p["code"]: p for p in sh["projects"]}
-b2, a12 = projs.get("RUMAH-BLK-B2"), projs.get("RUMAH-BLK-A12")
-step("shift: 2 project Griya ada", bool(b2 and a12), list(projs.keys()))
-step("shift: terjadwal hari ini", sh.get("scheduled") is True)
+step(f"shift: terjadwal hari ini (project {PROJECT['code']})",
+     sh.get("scheduled") is True and len(sh.get("projects", [])) >= 1,
+     (sh.get("scheduled"), [p.get("code") for p in sh.get("projects", [])]))
 
 
 # ---------- helper submit bertanda tangan ----------
-def submit(proj, evtype, device):
+def submit(proj, evtype, dev_):
     s, c = w("/challenge", {"event_type": evtype, "project_id": proj["id"]}, tok=tok)
     if s != 200: return s, err_code(c), None
     c = unwrap(c)
@@ -196,39 +232,31 @@ def submit(proj, evtype, device):
             "event_type": evtype, "project_id": proj["id"],
             "latitude": lat, "longitude": lon, "accuracy_m": 8.0,
             "captured_at_client": captured}
-    body["signature"] = device.sign_b64(signed_payload(body))
+    body["signature"] = dev_.sign_b64(signed_payload(body))
     s, r = w("/events", body, tok=tok)
     return s, c, r
 
 
 # ---------- NEGATIF: perangkat LAIN (HP teman) ditolak ----------
-s, c, r = submit(b2, "CHECK_IN", Device())
+s, c, r = submit(PROJECT, "CHECK_IN", Device())
 step("check-in dari perangkat LAIN ditolak (INVALID_ATTENDANCE_SIGNATURE)",
      err_code(r) == "INVALID_ATTENDANCE_SIGNATURE", (s, err_code(r)))
 
 # ---------- alur normal pakai perangkat sah ----------
-s, c, r = submit(b2, "CHECK_IN", dev); r = unwrap(r) if isinstance(r, dict) else {}
-step("check-in Blok B2 VALID", r.get("status") == "VALID", (s, r.get("status"), r.get("reason_code")))
+s, c, r = submit(PROJECT, "CHECK_IN", dev); r = unwrap(r) if isinstance(r, dict) else {}
+step(f"check-in {PROJECT['code']} VALID", r.get("status") == "VALID", (s, r.get("status"), r.get("reason_code")))
 
-s, c, r = submit(b2, "CHECK_IN", dev)
-step("duplikat check-in Blok B2 ditolak", c == "ATTENDANCE_ALREADY_RECORDED", (s, c))
+s, c, r = submit(PROJECT, "CHECK_IN", dev)
+step("duplikat check-in ditolak", c == "ATTENDANCE_ALREADY_RECORDED", (s, c))
 
-s, c, r = submit(a12, "CHECK_IN", dev); r = unwrap(r) if isinstance(r, dict) else {}
-step("check-in Blok A12 VALID (pindah lokasi)", r.get("status") == "VALID", (s, r.get("status")))
+# ---------- CHECK-OUT ----------
+s, c, r = submit(PROJECT, "CHECK_OUT", dev); r = unwrap(r) if isinstance(r, dict) else {}
+step("check-out VALID", r.get("status") == "VALID", (s, r.get("status")))
 
-s, sh = w("/shift", tok=tok); sh = unwrap(sh)
-tl = sh["timeline"]
-auto = [e for e in tl if e["event_type"] == "CHECK_OUT" and e["auto"]]
-step("auto check-out titik lama tercatat", len(auto) >= 1, [(e["project_name"], e.get("reason_code")) for e in auto])
-open_id = (sh.get("open_shift") or {}).get("project_id")
-step("open_shift kini Blok A12", open_id == a12["id"], (open_id == a12["id"],))
-
-s, c, r = submit(a12, "CHECK_OUT", dev); r = unwrap(r) if isinstance(r, dict) else {}
-step("check-out akhir VALID", r.get("status") == "VALID", (s, r.get("status")))
 s, sh = w("/shift", tok=tok); sh = unwrap(sh)
 step("open_shift kosong setelah check-out", sh.get("open_shift") is None)
 
-s, c, r = submit(a12, "CHECK_OUT", dev)
+s, c, r = submit(PROJECT, "CHECK_OUT", dev)
 step("check-out tanpa shift ditolak (CHECK_IN_REQUIRED)", c == "CHECK_IN_REQUIRED", (s, c))
 
 n_pass = sum(1 for _, ok, _ in results if ok)

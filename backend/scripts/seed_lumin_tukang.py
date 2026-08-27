@@ -1,38 +1,50 @@
-"""Migrasi + seed Lumin: multi-checkin tenant, 2 project perumahan, 5 tukang bangunan.
+"""Terapkan PIN unik untuk 5 tukang (EMP-020..EMP-024) + enable multi-checkin.
 
-Idempotent. Tidak menampilkan kredensial.
+Idempotent. TIDAK membuat worker/project baru — master data (EMP-001..024,
+PRJ-01..03) datang dari `seed_lumin_standalone.py`. TIDAK menampilkan nilai PIN.
+Membaca kredensial dari `.env.lumin` (sama seperti standalone seed).
 """
-import hashlib
 import json
 import os
-import secrets
 import sys
 
-sys.path.insert(0, "/home/ubuntu/FaztrackAttendance/backend")
+BACKEND_DIR = "/home/ubuntu/FaztrackAttendance/backend"
+sys.path.insert(0, BACKEND_DIR)
 
-from sqlalchemy import select
-from app.config import get_settings
-from app.database import SessionLocal
-from app.models import (Assignment, Project, Tenant, WorkSchedule, Worker)
-import datetime as dt
+
+def _load_env_file(path):
+    if not os.path.exists(path):
+        return {}
+    out = {}
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            out.setdefault(k.strip(), v.strip())
+    return out
+
+
+_env = _load_env_file(os.path.join(BACKEND_DIR, ".env.lumin"))
+DB_URL = os.environ.get(
+    "FAZTRACK_DATABASE_URL",
+    _env.get("FAZTRACK_DATABASE_URL"),
+)
+if not DB_URL:
+    print("ERROR: FAZTRACK_DATABASE_URL tidak ditemukan")
+    sys.exit(1)
+
+from sqlalchemy import create_engine, select  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from app import models  # noqa: E402,F401
+from app.models import Tenant, Worker  # noqa: E402
 
 TENANT_ID = "lumin-park-001"
-TENANT_CODE = "lumin-park"
-PINFILE = os.path.join(os.path.dirname(__file__), "..", "lumin_pins.json")
+PINFILE = os.path.join(BACKEND_DIR, "lumin_pins.json")
 
-WORKERS = [
-    ("TKN-APE", "Apes", "083186049749"),
-    ("TKN-ALI", "Ali", "082285088368"),
-    ("TKN-YUS", "Yus", "083182310429"),
-    ("TKN-FER", "Ferdi", "085185783200"),
-    ("TKN-RAP", "Rapi", "083844174344"),
-]
-
-PROJECTS = [
-    # code, name, lat, lon, radius_m
-    ("RUMAH-BLK-B2", "Perumahan Griya — Blok B No 2", -0.84290, 100.37310, 120, dt.time(8, 0), dt.time(17, 0)),
-    ("RUMAH-BLK-A12", "Perumahan Griya — Blok A No 12", -0.84410, 100.37420, 120, dt.time(8, 0), dt.time(17, 0)),
-]
+# 5 tukang sesuai master data (Pekerja Bangunan = EMP-020..EMP-024)
+TUKANG_CODES = ["EMP-020", "EMP-021", "EMP-022", "EMP-023", "EMP-024"]
 
 
 def hash_pin(pin: str) -> str:
@@ -40,8 +52,7 @@ def hash_pin(pin: str) -> str:
     return hash_password(pin)
 
 
-def load_unique_pins() -> dict[str, str]:
-    """Baca PIN unik per worker dari lumin_pins.json (mode 600, tidak di-commit)."""
+def load_unique_pins() -> dict:
     try:
         with open(PINFILE) as f:
             return json.load(f)
@@ -49,61 +60,43 @@ def load_unique_pins() -> dict[str, str]:
         return {}
 
 
+engine = create_engine(DB_URL, pool_pre_ping=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
 def main() -> None:
-    default_pin = get_settings().demo_worker_pin
+    default_pin = os.environ.get("FAZTRACK_DEMO_WORKER_PIN") or _env.get("FAZTRACK_DEMO_WORKER_PIN")
     unique_pins = load_unique_pins()
 
     db = SessionLocal()
     try:
         t = db.get(Tenant, TENANT_ID)
+        if t is None:
+            print("ERROR: tenant tidak ada — jalankan seed_lumin_standalone.py dulu.")
+            sys.exit(1)
         t.allow_multi_checkin = True
         db.add(t)
 
-        proj_ids = {}
-        for code, name, lat, lon, radius, wstart, wend in PROJECTS:
-            p = db.scalar(select(Project).where(Project.tenant_id == TENANT_ID, Project.code == code))
-            if not p:
-                p = Project(tenant_id=TENANT_ID, code=code, name=name,
-                            latitude=lat, longitude=lon, geofence_radius_m=radius,
-                            work_start=wstart, work_end=wend)
-                db.add(p)
-                db.flush()
-                print(f"+ project {code}: {name}")
-            proj_ids[code] = p.id
-
-        today = dt.date.today()
-        for code, name, phone in WORKERS:
-            w = db.scalar(select(Worker).where(Worker.tenant_id == TENANT_ID, Worker.code == code))
+        for code in TUKANG_CODES:
+            w = db.scalar(select(Worker).where(Worker.tenant_id == TENANT_ID,
+                                               Worker.code == code))
+            if w is None:
+                print(f"WARN: worker {code} tidak ada — skip")
+                continue
             unique = unique_pins.get(code) or default_pin
-            assert unique, f"PIN untuk {code} tidak tersedia (lumin_pins.json / FAZTRACK_DEMO_WORKER_PIN)"
-            if not w:
-                w = Worker(tenant_id=TENANT_ID, code=code, name=name, phone=phone,
-                           pin_hash=hash_pin(unique))
-                db.add(w)
-                db.flush()
-                print(f"+ worker {code} {name}")
-            # PIN unik per worker: re-hash tiap run agar idempotent & konsisten dengan lumin_pins.json
+            assert unique, f"PIN utk {code} tidak tersedia (lumin_pins.json / FAZTRACK_DEMO_WORKER_PIN)"
             w.pin_hash = hash_pin(unique)
-            if not db.scalar(select(Assignment).where(Assignment.worker_id == w.id,
-                                                      Assignment.work_date == today)):
-                base_project = proj_ids["RUMAH-BLK-B2"]
-                db.add(Assignment(tenant_id=TENANT_ID, worker_id=w.id,
-                                  project_id=base_project, work_date=today))
-            if not db.scalar(select(WorkSchedule).where(WorkSchedule.worker_id == w.id,
-                                                        WorkSchedule.work_date == today)):
-                db.add(WorkSchedule(tenant_id=TENANT_ID, worker_id=w.id, work_date=today,
-                                    start_time=dt.time(8, 0), end_time=dt.time(17, 0),
-                                    is_working_day=True))
+            db.add(w)
         db.commit()
 
-        print("\nVerifikasi:")
-        for code, name, _ in WORKERS:
-            w = db.scalar(select(Worker).where(Worker.tenant_id == TENANT_ID, Worker.code == code))
-            a = db.scalar(select(Assignment).where(Assignment.worker_id == w.id,
-                                                   Assignment.work_date == today))
-            s = db.scalar(select(WorkSchedule).where(WorkSchedule.worker_id == w.id,
-                                                     WorkSchedule.work_date == today))
-            print(f"  {code} {name}: assignment={'OK' if a else 'MISSING'} schedule={'OK' if s else 'MISSING'} has_pin={bool(w.pin_hash)}")
+        print("\nVerifikasi (nilai PIN tidak ditampilkan):")
+        for code in TUKANG_CODES:
+            w = db.scalar(select(Worker).where(Worker.tenant_id == TENANT_ID,
+                                               Worker.code == code))
+            if w is None:
+                print(f"  {code}: MISSING")
+                continue
+            print(f"  {code} {w.name}: has_pin={bool(w.pin_hash)}")
         t2 = db.get(Tenant, TENANT_ID)
         print(f"  allow_multi_checkin={t2.allow_multi_checkin}")
     finally:

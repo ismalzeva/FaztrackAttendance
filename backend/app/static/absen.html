@@ -117,12 +117,7 @@
     </div>
     <label>Nama kamu</label>
     <select id="f-worker">
-      <option value="">— Pilih nama —</option>
-      <option value="TKN-APE">Apes</option>
-      <option value="TKN-ALI">Ali</option>
-      <option value="TKN-YUS">Yus</option>
-      <option value="TKN-FER">Ferdi</option>
-      <option value="TKN-RAP">Rapi</option>
+      <option value="">— Memuat nama… —</option>
     </select>
     <label>PIN</label>
     <input id="f-pin" type="password" inputmode="numeric" maxlength="8" placeholder="PIN absen">
@@ -356,6 +351,25 @@ function refreshDevice(){
   checkDeviceAndRoute().then(closeSheet).catch(e=>{closeSheet();showErr('err-device',e.message)});
 }
 
+/* ---------- ROSTER (daftar karyawan aktif) ---------- */
+async function loadRoster(){
+  const sel=$('f-worker');
+  try{
+    const d=await api('/roster?tenant_code='+encodeURIComponent('lumin-park'));
+    const ws=(d&&Array.isArray(d.workers))?d.workers:[];
+    if(!ws.length){sel.innerHTML='<option value="">— Belum ada karyawan —</option>';return}
+    sel.innerHTML='<option value="">— Pilih nama —</option>';
+    ws.forEach(w=>{
+      const o=document.createElement('option');
+      o.value=w.code;o.textContent=w.name+' ('+w.code+')';
+      sel.appendChild(o);
+    });
+  }catch(e){
+    sel.innerHTML='<option value="">— Gagal memuat nama —</option>';
+    showErr('err-login','Gagal memuat daftar karyawan: '+e.message);
+  }
+}
+
 /* ---------- LOGIN ---------- */
 async function login(){
   hideErr('err-login');
@@ -516,6 +530,7 @@ function showSheet(kind,title,body,done){
 function closeSheet(){$('ov').style.display='none'}
 
 /* init */
+loadRoster();
 if(token&&me){$('f-worker').value=me.code||'';enterHome()}
 </script>
 </body>
