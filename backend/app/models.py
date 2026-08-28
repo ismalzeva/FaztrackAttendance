@@ -1199,3 +1199,55 @@ class ExceptionDecisionAction(Base):
     metadata_json: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+
+# ── HRD Import System ──────────────────────────────────────────────
+class ShiftRuleStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    ACTIVE = "ACTIVE"
+    ARCHIVED = "ARCHIVED"
+
+class ShiftRule(Base):
+    """Structured shift rules generated from HRD's natural language description via AI."""
+    __tablename__ = "shift_rules"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_shift_rule_tenant_name"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))  # e.g. "Metro Mining Standard Shift"
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[ShiftRuleStatus] = mapped_column(Enum(ShiftRuleStatus), default=ShiftRuleStatus.DRAFT)
+    # Structured rule JSON — the canonical format
+    rules_json: Mapped[str] = mapped_column(Text)  # JSON: shifts, rotation, constraints
+    # Original natural language input from HRD
+    natural_language_input: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # AI parsing metadata
+    ai_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    ai_confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now, onupdate=now)
+
+class HRDImportStatus(str, enum.Enum):
+    UPLOADED = "UPLOADED"
+    PREVIEWING = "PREVIEWING"
+    CONFIRMED = "CONFIRMED"
+    IMPORTING = "IMPORTING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+
+class HRDImportBatch(Base):
+    """Tracks HRD bulk import of workers + schedules."""
+    __tablename__ = "hrd_import_batches"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(500))
+    status: Mapped[HRDImportStatus] = mapped_column(Enum(HRDImportStatus), default=HRDImportStatus.UPLOADED)
+    total_rows: Mapped[int] = mapped_column(Integer, default=0)
+    valid_rows: Mapped[int] = mapped_column(Integer, default=0)
+    error_rows: Mapped[int] = mapped_column(Integer, default=0)
+    imported_rows: Mapped[int] = mapped_column(Integer, default=0)
+    shift_rule_id: Mapped[str | None] = mapped_column(ForeignKey("shift_rules.id"), nullable=True)
+    preview_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # preview data
+    error_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # validation errors
+    mapping_json: Mapped[str | None] = mapped_column(Text, nullable=True)  # column mapping
+    created_by: Mapped[str] = mapped_column(String(36))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

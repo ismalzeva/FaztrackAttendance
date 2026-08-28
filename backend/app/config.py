@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     cors_origins: list[str] = ["http://localhost:3000"]
     demo_seed_password: str | None = None
     demo_worker_pin: str | None = None
+    sumopod_api_key: str = ""
+    sumopod_base_url: str = "https://ai.sumopod.com"
+    sumopod_model: str = "mimo-v2.5-pro"
 
     @field_validator("cors_origins", mode="before")
     @classmethod

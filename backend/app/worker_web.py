@@ -427,7 +427,7 @@ def web_submit(
         longitude=body.longitude,
         accuracy_m=body.accuracy_m,
         distance_m=distance,
-        signature=body.signature,
+        signature=body.signature or "",
         site_note=(body.site_note or None),
     )
     db.add(ev)
