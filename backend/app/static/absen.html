@@ -324,27 +324,10 @@ async function enroll(){
 }
 
 async function checkDeviceAndRoute(){
-  const dev=await api('/device');
-  if(dev.enrolled){
-    $('view-device').style.display='none';
-    $('view-home').style.display='flex';
-    await refresh();
-  }else{
-    $('view-home').style.display='none';
-    $('view-device').style.display='block';
-    if(dev.enrollment_status==='PENDING'){
-      $('dev-title').textContent='Menunggu Persetujuan Mandor';
-      $('dev-sub').textContent='Permintaan pendaftaran HP kamu sudah terkirim. Minta mandor/admin menyetujuinya, lalu tekan "CEK STATUS".';
-      $('dev-cta').style.display='none';
-      $('dev-wait').style.display='block';
-    }else{
-      $('dev-title').textContent='Daftarkan HP Ini';
-      $('dev-sub').textContent='Untuk mencegah titip absen, setiap absen hanya bisa dari HP yang sudah didaftarkan & disetujui mandor. HP kamu akan diberi kunci keamanan unik yang hanya ada di HP ini.';
-      $('dev-cta').style.display='block';
-      $('dev-cta').textContent='DAFTARKAN HP INI';
-      $('dev-wait').style.display='none';
-    }
-  }
+  // Device binding opsional — langsung ke halaman absen
+  $('view-device').style.display='none';
+  $('view-home').style.display='flex';
+  await refresh();
 }
 function refreshDevice(){
   showSheet(null,'Memeriksa status HP…');

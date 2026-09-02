@@ -21,6 +21,10 @@ from app.roster import router as roster_router
 from app.exceptions import router as exceptions_router
 from app.reports import router as reports_router
 from app.lumin_dashboard import router as lumin_dashboard_router
+from app.admin_management import router as admin_management_router
+from app.schedule_management import router as schedule_management_router
+from app.leave_management import router as leave_management_router
+from app.phase3 import router as phase3_router
 from app.hrd_import import router as hrd_import_router
 
 settings=get_settings(); app=FastAPI(title="Faztrack Attendance API",version="0.1.0",docs_url="/docs" if settings.env!="production" else None)
@@ -41,6 +45,10 @@ app.include_router(roster_router)
 app.include_router(exceptions_router)
 app.include_router(reports_router)
 app.include_router(lumin_dashboard_router)
+app.include_router(admin_management_router)
+app.include_router(schedule_management_router)
+app.include_router(leave_management_router)
+app.include_router(phase3_router)
 app.include_router(hrd_import_router)
 app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origins,allow_credentials=True,allow_methods=["*"],allow_headers=["*"])
 
