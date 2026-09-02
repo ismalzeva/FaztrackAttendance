@@ -523,3 +523,104 @@ def upload_photo(
     # This endpoint expects multipart form data with 'photo' field
     # For simplicity, we'll accept base64 in JSON body
     return {"status": "ok", "message": "Use photo_url field in /events endpoint instead"}
+
+
+# ──────────────────────────────────────────────
+# WORKER LEAVE REQUEST
+# ──────────────────────────────────────────────
+
+class WorkerLeaveRequest(BaseModel):
+    leave_type: str = Field(pattern="^(IZIN|SAKIT|CUTI|DINAS_LUAR)$")
+    leave_date: str  # YYYY-MM-DD
+    end_date: str | None = None  # YYYY-MM-DD, untuk cuti multi-hari
+    reason: str | None = None
+
+
+@router.post("/leave-request")
+def worker_leave_request(
+    body: WorkerLeaveRequest,
+    request: Request,
+    ctx: WorkerContext = Depends(worker_context),
+    db: Session = Depends(get_db),
+):
+    """Karyawan mengajukan izin/sakit/cuti/dinas dari halaman absen."""
+    from app.leave_management import LeaveRequest, LeaveStatus
+    from datetime import date as dt
+
+    tid = ctx.tenant_id
+    wid = ctx.worker.id
+
+    # Parse dates
+    try:
+        leave_date = dt.fromisoformat(body.leave_date)
+        end_date = dt.fromisoformat(body.end_date) if body.end_date else None
+    except ValueError:
+        raise HTTPException(422, detail={"code": "INVALID_DATE"})
+
+    # Check duplicate
+    existing = db.scalar(
+        select(LeaveRequest).where(
+            LeaveRequest.tenant_id == tid,
+            LeaveRequest.worker_id == wid,
+            LeaveRequest.date_from == leave_date,
+            LeaveRequest.status.in_([LeaveStatus.PENDING, LeaveStatus.APPROVED]),
+        )
+    )
+    if existing:
+        raise HTTPException(409, detail={"code": "LEAVE_ALREADY_EXISTS"})
+
+    lr = LeaveRequest(
+        tenant_id=tid,
+        worker_id=wid,
+        leave_type=body.leave_type,
+        date_from=leave_date,
+        date_to=end_date or leave_date,
+        reason=body.reason,
+        status=LeaveStatus.PENDING,
+    )
+    db.add(lr)
+    db.commit()
+
+    return envelope(
+        {
+            "id": lr.id,
+            "leave_type": lr.leave_type,
+            "date_from": str(lr.date_from),
+            "date_to": str(lr.date_to),
+            "status": lr.status,
+            "message": "Pengajuan berhasil. Menunggu persetujuan admin/supervisor.",
+        },
+        request,
+    )
+
+
+@router.get("/leave-history")
+def worker_leave_history(
+    request: Request,
+    ctx: WorkerContext = Depends(worker_context),
+    db: Session = Depends(get_db),
+):
+    """Riwayat pengajuan izin/sakit/cuti/dinas karyawan."""
+    from app.leave_management import LeaveRequest
+
+    rows = db.scalars(
+        select(LeaveRequest).where(
+            LeaveRequest.tenant_id == ctx.tenant_id,
+            LeaveRequest.worker_id == ctx.worker.id,
+        ).order_by(LeaveRequest.created_at.desc())
+    ).all()
+
+    result = []
+    for r in rows:
+        result.append({
+            "id": r.id,
+            "leave_type": r.leave_type,
+            "date_from": str(r.date_from),
+            "date_to": str(r.date_to) if r.date_to else None,
+            "reason": r.reason,
+            "status": r.status,
+            "review_note": r.review_note,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        })
+
+    return envelope(result, request)

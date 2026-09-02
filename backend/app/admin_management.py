@@ -328,7 +328,7 @@ def decide_review(
         raise HTTPException(404, detail={"code": "EVENT_NOT_FOUND"})
     if ev.status != AttendanceStatus.REVIEW:
         raise HTTPException(409, detail={"code": "NOT_IN_REVIEW_STATUS"})
-    ev.status = AttendanceStatus(body.decision)
+    ev.status = AttendanceStatus.VALID if body.decision == "APPROVED" else AttendanceStatus.REJECTED
     ev.reviewed_at = datetime.now(timezone.utc)
     ev.reviewed_by = ctx.user.id
     ev.review_reason = body.reason

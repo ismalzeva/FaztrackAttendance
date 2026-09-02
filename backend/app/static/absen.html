@@ -163,6 +163,28 @@
 
     <div class="seclabel">Riwayat hari ini</div>
     <div class="card" id="timeline"><div class="empty">Belum ada absen hari ini.</div></div>
+
+    <div class="seclabel">Pengajuan Izin / Sakit / Cuti / Dinas</div>
+    <div class="card">
+      <label style="margin-top:0">Jenis pengajuan</label>
+      <select id="f-leave-type">
+        <option value="IZIN">Izin</option>
+        <option value="SAKIT">Sakit</option>
+        <option value="CUTI">Cuti</option>
+        <option value="DINAS_LUAR">Dinas Luar</option>
+      </select>
+      <label>Tanggal</label>
+      <input type="date" id="f-leave-date">
+      <label>Sampai (opsional, untuk cuti multi-hari)</label>
+      <input type="date" id="f-leave-end">
+      <label>Alasan</label>
+      <input id="f-leave-reason" maxlength="200" placeholder="mis. acara keluarga, sakit demam…">
+      <button class="btn btn-blue" onclick="submitLeave()">AJUKAN</button>
+      <div class="err" id="err-leave"></div>
+    </div>
+
+    <div class="seclabel">Riwayat Pengajuan</div>
+    <div class="card" id="leave-history"><div class="empty">Belum ada pengajuan.</div></div>
   </div>
 </div>
 
@@ -380,6 +402,8 @@ async function enterHome(){
   $('topbar').style.display='block';$('hello').textContent='Halo, '+me.name+' 👋';
   try{await checkDeviceAndRoute()}
   catch(e){$('topbar').style.display='none';$('view-login').style.display='block';showErr('err-login',e.message)}
+  initLeaveForm();
+  loadLeaveHistory();
 }
 
 async function refresh(){
@@ -511,6 +535,51 @@ function showSheet(kind,title,body,done){
   $('sh-title').textContent=title;$('sh-body').textContent=body;
 }
 function closeSheet(){$('ov').style.display='none'}
+
+// ─── LEAVE REQUEST ───
+function todayStr(){
+  return new Date().toLocaleDateString('sv-SE',{timeZone:'Asia/Jakarta'});
+}
+function initLeaveForm(){
+  const d=$('f-leave-date');
+  if(d && !d.value) d.value=todayStr();
+}
+async function submitLeave(){
+  hideErr('err-leave');
+  const type=$('f-leave-type').value;
+  const dateFrom=$('f-leave-date').value;
+  const dateEnd=$('f-leave-end').value||null;
+  const reason=$('f-leave-reason').value||null;
+  if(!dateFrom){showErr('err-leave','Pilih tanggal dulu.');return}
+  try{
+    const r=await api(APIV1+'/worker-web/leave-request','POST',{
+      leave_type:type,leave_date:dateFrom,end_date:dateEnd,reason:reason
+    });
+    showSheet('ok','Pengajuan berhasil!','Menunggu persetujuan admin/supervisor.',true);
+    loadLeaveHistory();
+    $('f-leave-reason').value='';
+    $('f-leave-end').value='';
+  }catch(e){
+    const msg=ERRMAP[e.message]||e.message||'Gagal mengajukan.';
+    showErr('err-leave',msg);
+  }
+}
+async function loadLeaveHistory(){
+  try{
+    const r=await api(APIV1+'/worker-web/leave-history','GET');
+    const list=r.data||[];
+    const el=$('leave-history');
+    if(!list.length){el.innerHTML='<div class="empty">Belum ada pengajuan.</div>';return}
+    const labels={IZIN:'Izin',SAKIT:'Sakit',CUTI:'Cuti',DINAS_LUAR:'Dinas Luar'};
+    const statusColors={PENDING:'var(--warn)',APPROVED:'var(--ok)',REJECTED:'var(--bad)',CANCELLED:'var(--muted)'};
+    el.innerHTML=list.map(l=>`<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--line)">
+      <div><b>${labels[l.leave_type]||l.leave_type}</b> · ${l.date_from}${l.date_to&&l.date_to!==l.date_from?' s/d '+l.date_to:''}<br><small style="color:var(--muted)">${l.reason||'—'}</small></div>
+      <span style="background:${statusColors[l.status]||'var(--muted)'};color:#fff;padding:4px 10px;border-radius:8px;font-size:12px;font-weight:600">${l.status}</span>
+    </div>`).join('');
+  }catch(e){/* silent */}
+}
+// Auto-init on login
+const origRefresh=typeof refresh==='function'?refresh:null;
 
 /* init */
 loadRoster();
