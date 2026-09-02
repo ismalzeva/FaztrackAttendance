@@ -96,7 +96,7 @@ def list_requests(
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
     worker_id: str | None = Query(None),
-    ctx: RequestContext = Depends(admin_context),
+    ctx: RequestContext = Depends(approval_context),
     db: Session = Depends(get_db),
 ):
     """List pengajuan izin/sakit/cuti/dinas."""
@@ -326,6 +326,7 @@ def attendance_status(
         # Check if workday
         is_workday = True
         work_start = "08:00"
+        work_end = "17:00"
         
         if w.id in override_map:
             is_workday = override_map[w.id].is_workday
@@ -338,6 +339,7 @@ def attendance_status(
                 work_days = [int(d) for d in tmpl.work_days.split(",") if d.strip()]
                 is_workday = day_of_week in work_days
                 work_start = tmpl.work_start
+                work_end = tmpl.work_end
         else:
             is_workday = check_date.weekday() < 6
         
@@ -363,9 +365,22 @@ def attendance_status(
         elif check_in_ev:
             # Check if late
             check_in_time = check_in_ev.server_time.astimezone(timezone.utc).strftime("%H:%M")
-            if check_in_time > work_start:
+            is_late = check_in_time > work_start
+            # Check if early leave
+            is_early = False
+            if check_out_ev:
+                check_out_time = check_out_ev.server_time.astimezone(timezone.utc).strftime("%H:%M")
+                is_early = check_out_time < work_end
+            
+            if is_late and is_early:
+                status = "TERLAMBAT_PULANG_CEPAT"
+                status_detail = f"Terlambat ({check_in_time}) & Pulang cepat ({check_out_time})"
+            elif is_late:
                 status = "TERLAMBAT"
                 status_detail = f"Terlambat ({check_in_time} > {work_start})"
+            elif is_early:
+                status = "PULANG_CEPAT"
+                status_detail = f"Pulang cepat ({check_out_time} < {work_end})"
             else:
                 status = "HADIR"
                 status_detail = f"Hadir ({check_in_time})"
@@ -391,6 +406,7 @@ def attendance_status(
         "summary": {
             "hadir": len([r for r in result if r["status"] == "HADIR"]),
             "terlambat": len([r for r in result if r["status"] == "TERLAMBAT"]),
+            "pulang_cepat": len([r for r in result if r["status"] in ("PULANG_CEPAT", "TERLAMBAT_PULANG_CEPAT")]),
             "izin": len([r for r in result if r["status"] == "IZIN"]),
             "sakit": len([r for r in result if r["status"] == "SAKIT"]),
             "cuti": len([r for r in result if r["status"] == "CUTI"]),

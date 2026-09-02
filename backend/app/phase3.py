@@ -193,7 +193,7 @@ def list_overtime(
     status: str | None = Query(None),
     date_from: date | None = Query(None),
     date_to: date | None = Query(None),
-    ctx: RequestContext = Depends(admin_context),
+    ctx: RequestContext = Depends(approval_context),
     db: Session = Depends(get_db),
 ):
     """List pengajuan lembur."""
@@ -473,6 +473,7 @@ def monthly_report(
         total_workdays = 0
         hadir = 0
         terlambat = 0
+        pulang_cepat = 0
         izin = 0
         sakit = 0
         cuti = 0
@@ -526,8 +527,15 @@ def monthly_report(
                     elif ltype == "DINAS_LUAR": dinas_luar += 1
                 elif check_in:
                     ci_time = check_in.server_time.astimezone(timezone.utc).strftime("%H:%M")
-                    if ci_time > work_start:
+                    is_late = ci_time > work_start
+                    is_early = False
+                    if check_out:
+                        co_time = check_out.server_time.astimezone(timezone.utc).strftime("%H:%M")
+                        is_early = co_time < work_end
+                    if is_late:
                         terlambat += 1
+                    elif is_early:
+                        pulang_cepat += 1
                     else:
                         hadir += 1
                     # Calculate work hours
@@ -557,6 +565,7 @@ def monthly_report(
             "total_workdays": total_workdays,
             "hadir": hadir,
             "terlambat": terlambat,
+            "pulang_cepat": pulang_cepat,
             "izin": izin,
             "sakit": sakit,
             "cuti": cuti,
@@ -580,39 +589,48 @@ def export_monthly(
     request: Request,
     year: int = Query(...),
     month: int = Query(...),
-    format: str = Query("csv", pattern="^(csv|xlsx)$"),
+    format: str = Query("csv", pattern="^(csv|xlsx|pdf)$"),
     ctx: RequestContext = Depends(admin_context),
     db: Session = Depends(get_db),
 ):
-    """Export laporan bulanan ke CSV/Excel."""
+    """Export laporan bulanan ke CSV/Excel/PDF."""
     import io
     from fastapi.responses import StreamingResponse
     
-    # Reuse monthly report logic (simplified — call the same function)
-    # For now, just export the basic data
+    # Reuse monthly report logic
     tid = ctx.membership.tenant_id
-    workers = db.scalars(
-        select(Worker).where(Worker.tenant_id == tid, Worker.is_active.is_(True))
-        .order_by(Worker.code)
-    ).all()
     
-    rows = []
-    for w in workers:
-        rows.append([w.code, w.name, "", "", "", "", "", "", "", "", "", "", ""])
+    # Call the same function to get data
+    temp_request = request
+    report_data = monthly_report(temp_request, year, month, ctx, db)
+    rows = report_data.get("data", {}).get("rows", [])
+    
+    headers_list = ["Kode", "Nama", "Hari Kerja", "Hadir", "Terlambat", "Pulang Cepat", 
+                    "Izin", "Sakit", "Cuti", "Dinas Luar", "TK", "Libur", "Jam Kerja", "Jam Lembur"]
+    
+    data_rows = []
+    for r in rows:
+        data_rows.append([
+            r["worker_code"], r["worker_name"], r["total_workdays"],
+            r["hadir"], r["terlambat"], r.get("pulang_cepat", 0),
+            r["izin"], r["sakit"], r["cuti"], r["dinas_luar"],
+            r["tanpa_keterangan"], r["libur"],
+            r["total_work_hours"], r["total_overtime_hours"]
+        ])
     
     if format == "csv":
         import csv
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Kode", "Nama", "Total Hari Kerja", "Hadir", "Terlambat", "Izin", "Sakit", "Cuti", "Dinas Luar", "Tanpa Keterangan", "Jam Kerja", "Jam Lembur"])
-        writer.writerows(rows)
+        writer.writerow(headers_list)
+        writer.writerows(data_rows)
         output.seek(0)
         return StreamingResponse(
             iter([output.getvalue()]),
             media_type="text/csv",
             headers={"Content-Disposition": f"attachment; filename=laporan_bulanan_{year}_{month:02d}.csv"},
         )
-    else:
+    elif format == "xlsx":
         try:
             from openpyxl import Workbook
         except ImportError:
@@ -620,8 +638,8 @@ def export_monthly(
         wb = Workbook()
         ws = wb.active
         ws.title = f"Laporan {year}-{month:02d}"
-        ws.append(["Kode", "Nama", "Total Hari Kerja", "Hadir", "Terlambat", "Izin", "Sakit", "Cuti", "Dinas Luar", "Tanpa Keterangan", "Jam Kerja", "Jam Lembur"])
-        for row in rows:
+        ws.append(headers_list)
+        for row in data_rows:
             ws.append(row)
         output = io.BytesIO()
         wb.save(output)
@@ -630,4 +648,63 @@ def export_monthly(
             output,
             media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             headers={"Content-Disposition": f"attachment; filename=laporan_bulanan_{year}_{month:02d}.xlsx"},
+        )
+    else:  # PDF
+        from fpdf import FPDF
+        FONT_DIR = "/usr/share/fonts/truetype/dejavu/"
+        
+        class PayrollPDF(FPDF):
+            def header(self):
+                self.set_font("B", "B", 10)
+                self.set_text_color(80, 80, 80)
+                self.cell(0, 8, f"Laporan Kehadiran Bulanan \u2014 {year}-{month:02d}", align="L")
+                self.cell(0, 8, "Lumin Park", align="R", new_x="LMARGIN", new_y="NEXT")
+                self.set_draw_color(200, 200, 200)
+                self.line(10, self.get_y(), 290, self.get_y())
+                self.ln(3)
+            
+            def footer(self):
+                self.set_y(-15)
+                self.set_font("B", "", 8)
+                self.set_text_color(150, 150, 150)
+                self.cell(0, 10, f"Halaman {self.page_no()}/{{nb}}", align="C")
+        
+        pdf = PayrollPDF(orientation="L", unit="mm", format="A4")
+        pdf.alias_nb_pages()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pdf.add_font("B", "", FONT_DIR + "DejaVuSans.ttf")
+        pdf.add_font("B", "B", FONT_DIR + "DejaVuSans-Bold.ttf")
+        pdf.add_page()
+        
+        # Table header
+        col_widths = [18, 40, 15, 12, 14, 16, 10, 10, 10, 16, 8, 10, 16, 16]
+        pdf.set_fill_color(30, 30, 30)
+        pdf.set_text_color(255, 255, 255)
+        pdf.set_font("B", "B", 7)
+        for i, h in enumerate(headers_list):
+            pdf.cell(col_widths[i], 7, h, border=1, fill=True, align="C")
+        pdf.ln()
+        
+        # Table rows
+        pdf.set_text_color(30, 30, 30)
+        pdf.set_font("B", "", 7)
+        for idx, row in enumerate(data_rows):
+            pdf.set_fill_color(245, 245, 245) if idx % 2 == 0 else pdf.set_fill_color(255, 255, 255)
+            for i, val in enumerate(row):
+                align = "L" if i < 2 else "C"
+                pdf.cell(col_widths[i], 6, str(val), border=1, fill=True, align=align)
+            pdf.ln()
+        
+        # Summary
+        pdf.ln(5)
+        pdf.set_font("B", "B", 9)
+        pdf.cell(0, 7, f"Total: {len(data_rows)} karyawan", new_x="LMARGIN", new_y="NEXT")
+        
+        output = io.BytesIO()
+        output.write(pdf.output())
+        output.seek(0)
+        return StreamingResponse(
+            output,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f"attachment; filename=laporan_bulanan_{year}_{month:02d}.pdf"},
         )
