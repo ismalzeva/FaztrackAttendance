@@ -352,7 +352,7 @@ def attendance_report(
     date_from: date = Query(...),
     date_to: date = Query(...),
     project_id: str | None = Query(None),
-    ctx: RequestContext = Depends(admin_context),
+    ctx: RequestContext = Depends(approval_context),
     db: Session = Depends(get_db),
 ):
     """Laporan kehadiran per periode."""
@@ -419,7 +419,7 @@ def export_attendance(
     date_to: date = Query(...),
     project_id: str | None = Query(None),
     format: str = Query("csv", pattern="^(csv|xlsx)$"),
-    ctx: RequestContext = Depends(admin_context),
+    ctx: RequestContext = Depends(approval_context),
     db: Session = Depends(get_db),
 ):
     """Export laporan kehadiran ke CSV/Excel."""
