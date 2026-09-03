@@ -552,21 +552,24 @@ async function submitLeave(){
   const reason=$('f-leave-reason').value||null;
   if(!dateFrom){showErr('err-leave','Pilih tanggal dulu.');return}
   try{
-    const r=await api(APIV1+'/worker-web/leave-request','POST',{
-      leave_type:type,leave_date:dateFrom,end_date:dateEnd,reason:reason
+    const r=await apiV1('/worker-web/leave-request',{
+      method:'POST',
+      body:JSON.stringify({
+        leave_type:type,leave_date:dateFrom,end_date:dateEnd,reason:reason
+      })
     });
     showSheet('ok','Pengajuan berhasil!','Menunggu persetujuan admin/supervisor.',true);
     loadLeaveHistory();
     $('f-leave-reason').value='';
     $('f-leave-end').value='';
   }catch(e){
-    const msg=ERRMAP[e.message]||e.message||'Gagal mengajukan.';
+    const msg=ERRMAP[e.code]||e.message||'Gagal mengajukan.';
     showErr('err-leave',msg);
   }
 }
 async function loadLeaveHistory(){
   try{
-    const r=await api(APIV1+'/worker-web/leave-history','GET');
+    const r=await apiV1('/worker-web/leave-history');
     const list=r.data||[];
     const el=$('leave-history');
     if(!list.length){el.innerHTML='<div class="empty">Belum ada pengajuan.</div>';return}
