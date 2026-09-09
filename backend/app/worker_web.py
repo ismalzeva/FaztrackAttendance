@@ -141,6 +141,62 @@ def today_shift(
             WorkSchedule.work_date == work_date,
         )
     )
+    # Fallback: if no WorkSchedule entry, check template-based EmployeeSchedule
+    if not schedule:
+        from app.schedule_management import EmployeeSchedule, ScheduleTemplate, HolidayCalendar, ScheduleOverride
+        override = db.scalar(
+            select(ScheduleOverride).where(
+                ScheduleOverride.tenant_id == ctx.tenant_id,
+                ScheduleOverride.worker_id == ctx.worker.id,
+                ScheduleOverride.override_date == work_date,
+            )
+        )
+        if override:
+            scheduled_flag = override.is_workday
+            sched_start = "08:00"
+            sched_end = "17:00"
+        else:
+            holiday = db.scalar(
+                select(HolidayCalendar).where(
+                    HolidayCalendar.tenant_id == ctx.tenant_id,
+                    HolidayCalendar.holiday_date == work_date,
+                    HolidayCalendar.is_active.is_(True),
+                )
+            )
+            if holiday:
+                scheduled_flag = False
+                sched_start = None
+                sched_end = None
+            else:
+                emp_sched = db.scalar(
+                    select(EmployeeSchedule).where(
+                        EmployeeSchedule.tenant_id == ctx.tenant_id,
+                        EmployeeSchedule.worker_id == ctx.worker.id,
+                    )
+                )
+                if emp_sched:
+                    tmpl = db.get(ScheduleTemplate, emp_sched.template_id)
+                    if tmpl:
+                        day_of_week = work_date.weekday()
+                        work_days = [int(d) for d in tmpl.work_days.split(",") if d.strip()]
+                        scheduled_flag = day_of_week in work_days
+                        sched_start = tmpl.work_start if scheduled_flag else None
+                        sched_end = tmpl.work_end if scheduled_flag else None
+                    else:
+                        scheduled_flag = work_date.weekday() < 6
+                        sched_start = "08:00" if scheduled_flag else None
+                        sched_end = "17:00" if scheduled_flag else None
+                else:
+                    scheduled_flag = work_date.weekday() < 6
+                    sched_start = "08:00" if scheduled_flag else None
+                    sched_end = "17:00" if scheduled_flag else None
+        schedule_response = {"start": sched_start, "end": sched_end}
+    else:
+        schedule_response = {
+            "start": schedule.start_time.isoformat() if schedule else None,
+            "end": schedule.end_time.isoformat() if schedule else None,
+        }
+        scheduled_flag = schedule.is_working_day
     assignments = db.scalars(
         select(Assignment).where(
             Assignment.tenant_id == ctx.tenant_id,
@@ -209,11 +265,8 @@ def today_shift(
             "work_date": work_date.isoformat(),
             "timezone": tenant.timezone,
             "allow_multi_checkin": tenant.allow_multi_checkin,
-            "schedule": {
-                "start": schedule.start_time.isoformat() if schedule else None,
-                "end": schedule.end_time.isoformat() if schedule else None,
-            },
-            "scheduled": schedule is not None and schedule.is_working_day,
+            "schedule": schedule_response,
+            "scheduled": scheduled_flag,
             "projects": project_list,
             "open_shift": {
                 "project_id": open_shift.project_id,
