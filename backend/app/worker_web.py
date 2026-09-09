@@ -539,7 +539,6 @@ def web_submit(
         distance_m=distance,
         signature=body.signature or "",
         site_note=(body.site_note or None),
-        photo_url=(body.photo_url or None),
     )
     db.add(ev)
     db.commit()
