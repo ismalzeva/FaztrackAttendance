@@ -13,7 +13,11 @@ PG_DB="faztrack_attendance_lumin"
 
 # Validate environment
 if [ "$(hostname)" != "$EXPECTED_HOSTNAME" ]; then
-  echo "FATAL: Hostname mismatch. Expected $EXPECTED_HOSTNAME"
+  echo "FATAL: Hostname mismatch. Expected $EXPECTED_HOSTNAME, got $(hostname)"
+  exit 1
+fi
+if [ "$(whoami)" != "$EXPECTED_USER" ]; then
+  echo "FATAL: Must run as $EXPECTED_USER, got $(whoami)"
   exit 1
 fi
 
