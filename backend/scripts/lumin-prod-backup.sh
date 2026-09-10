@@ -170,30 +170,54 @@ App Dir: $APP_DIR
 EOF
 fi
 
-# ── 8. CHECKSUMS (INCLUDE manifest; relative paths) ──
+# ── 8. VERIFICATION-RESULT (written BEFORE checksums so it is covered) ──
+echo "--- Verification Result ---"
+if $DRY_RUN; then
+  echo "[DRY-RUN] Would write VERIFICATION-RESULT.txt (PASS) before checksums"
+else
+  if [ "$VALIDATION_ERRORS" -eq 0 ] && [ -s "$DB_DUMP" ]; then
+    {
+      echo "VERIFICATION-RESULT: PASS"
+      echo "verified_at: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+      echo "hostname: $(hostname)"
+      echo "release_id: $RELEASE_ID"
+      echo "pg_restore_list: PASS"
+      echo "dump_bytes: $(stat -c%s "$DB_DUMP" 2>/dev/null || echo 0)"
+    } > "$BACKUP_DIR/VERIFICATION-RESULT.txt"
+  else
+    echo "VERIFICATION-RESULT: FAIL" > "$BACKUP_DIR/VERIFICATION-RESULT.txt"
+    fatal_preflight "Pre-checksum validation failed; cannot certify backup"
+  fi
+  echo "  VERIFICATION-RESULT.txt: PASS"
+fi
+
+# ── 9. CHECKSUMS (INCLUDE manifest AND verification result; relative paths) ──
 echo "--- Checksums ---"
 if $DRY_RUN; then
-  echo "[DRY-RUN] Would write checksums-sha256.txt (includes BACKUP-MANIFEST.md)"
+  echo "[DRY-RUN] Would write checksums-sha256.txt (includes BACKUP-MANIFEST.md + VERIFICATION-RESULT.txt)"
   echo "[DRY-RUN] Would run sha256sum -c (self-verify)"
 else
   (
     cd "$BACKUP_DIR" || fatal_preflight "Cannot cd to backup dir"
-    find . -type f -not -name "checksums-sha256.txt" -printf "%P\n" | sort > /tmp/.lumin-filelist.$$
-    while IFS= read -r f; do sha256sum "$f"; done < /tmp/.lumin-filelist.$$ > checksums-sha256.txt
-    rm -f /tmp/.lumin-filelist.$$
+    find . -type f -not -name "checksums-sha256.txt" -printf "%P\n" | sort > "$BACKUP_DIR/.filelist.tmp"
+    while IFS= read -r f; do sha256sum "$f"; done < "$BACKUP_DIR/.filelist.tmp" > checksums-sha256.txt
+    rm -f "$BACKUP_DIR/.filelist.tmp"
   ) || fatal_preflight "Checksum generation failed"
 
-  # Self-verify (includes BACKUP-MANIFEST.md)
-  ( cd "$BACKUP_DIR" && sha256sum -c checksums-sha256.txt > /dev/null 2>&1 ) || fatal_preflight "Checksum verification failed"
-  echo "  SHA256 self-verify (incl. manifest): PASS"
+  # Every mandatory artifact must be covered by the checksum file
+  for req in BACKUP-MANIFEST.md VERIFICATION-RESULT.txt; do
+    grep -q "  $req$" "$BACKUP_DIR/checksums-sha256.txt" \
+      || fatal_preflight "$req not covered by checksums-sha256.txt"
+  done
+  echo "  Coverage (manifest + verification result): PASS"
 
-  # Final verification result
-  echo "PASS" > "$BACKUP_DIR/VERIFICATION-RESULT.txt"
-  echo "checksums_verified: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> "$BACKUP_DIR/VERIFICATION-RESULT.txt"
-  echo "  VERIFICATION-RESULT.txt written"
+  # Self-verify
+  ( cd "$BACKUP_DIR" && sha256sum -c checksums-sha256.txt > /dev/null 2>&1 ) \
+    || fatal_preflight "Checksum verification failed"
+  echo "  SHA256 self-verify: PASS"
 fi
 
-# ── 9. FINAL ──
+# ── 10. FINAL ──
 echo ""
 if [ "$VALIDATION_ERRORS" -gt 0 ]; then
   echo "=== BACKUP FAILED: $VALIDATION_ERRORS errors ==="

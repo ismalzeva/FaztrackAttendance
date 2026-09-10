@@ -55,17 +55,19 @@ recover() {
       $DRY_RUN || { sudo systemctl start faztrack-attendance-lumin.service 2>/dev/null || true
                     sudo systemctl start faztrack-attendance-lumin-web.service 2>/dev/null || true; }
       ;;
-    CURRENT_PRESERVED)
-      echo "Partial preserve. Restoring moved component(s)..."
+    CURRENT_PRESERVED|OLD_ACTIVATED)
+      echo "Partial rollback detected. Restoring moved component(s)..."
+      # Put back anything moved out of the app dir
       for c in "${STAGES_MOVED[@]}"; do
         if [ -d "$FAILED_RELEASE/$c" ] && [ ! -d "$APP_DIR/$c" ]; then
           mv "$FAILED_RELEASE/$c" "$APP_DIR/$c" 2>/dev/null || true
           echo "  Restored $c"
         fi
       done
+      # Ensure both sides come from the recorded release-pair
       if [ -n "$RELEASE_PAIR" ]; then
         for c in backend frontend; do
-          if [ -d "$RELEASE_PAIR/$c-old" ] && [ ! -d "$APP_DIR/$c" ]; then
+          if [ ! -d "$APP_DIR/$c" ] && [ -d "$RELEASE_PAIR/$c-old" ]; then
             mv "$RELEASE_PAIR/$c-old" "$APP_DIR/$c" 2>/dev/null || true
             echo "  Restored $c from release-pair"
           fi
@@ -73,9 +75,14 @@ recover() {
       fi
       $DRY_RUN || { sudo systemctl start faztrack-attendance-lumin.service 2>/dev/null || true
                     sudo systemctl start faztrack-attendance-lumin-web.service 2>/dev/null || true; }
+      if ! $DRY_RUN; then
+        echo "  pair: backend=$([ -d "$APP_DIR/backend" ] && echo present || echo MISSING) frontend=$([ -d "$APP_DIR/frontend" ] && echo present || echo MISSING)"
+        echo "  systemd backend : $(systemctl is-active faztrack-attendance-lumin.service 2>/dev/null || echo unknown)"
+        echo "  systemd frontend: $(systemctl is-active faztrack-attendance-lumin-web.service 2>/dev/null || echo unknown)"
+      fi
       ;;
-    OLD_ACTIVATED|VERIFYING)
-      echo "Rollback partially applied. Preserving all directories."
+    VERIFYING)
+      echo "Rollback applied but verification failed. Preserving all directories."
       ;;
   esac
   echo ""
@@ -204,13 +211,28 @@ mx sudo systemctl start faztrack-attendance-lumin.service
 mx sudo systemctl start faztrack-attendance-lumin-web.service
 sleep 3
 
-# ── HEALTH CHECKS ──
+# ── PAIR + SERVICE + HEALTH CHECKS ──
+echo "--- Pair Integrity ---"
+[ -d "$APP_DIR/backend" ] || fatal_after_switch "Pair incomplete: backend missing after rollback"
+[ -d "$APP_DIR/frontend" ] || fatal_after_switch "Pair incomplete: frontend missing after rollback"
+[ -f "$APP_DIR/backend/app/main.py" ] || fatal_after_switch "Restored backend is not a valid release"
+[ -f "$APP_DIR/frontend/.next/standalone/server.js" ] || fatal_after_switch "Restored frontend is not a valid release"
+echo "  backend + frontend both restored and valid"
+
+echo "--- Service State ---"
+BS="$(systemctl is-active faztrack-attendance-lumin.service 2>/dev/null || echo unknown)"
+FS="$(systemctl is-active faztrack-attendance-lumin-web.service 2>/dev/null || echo unknown)"
+echo "  systemd backend : $BS"
+echo "  systemd frontend: $FS"
+[ "$BS" = "active" ] || fatal_after_switch "Backend service not active after rollback ($BS)"
+[ "$FS" = "active" ] || fatal_after_switch "Frontend service not active after rollback ($FS)"
+
 echo "--- Health Checks ---"
 curl -sf http://localhost:8011/health/live > /dev/null 2>&1 || fatal_after_switch "Backend health failed after rollback"
 [ "$(curl -sf -o /dev/null -w '%{http_code}' http://localhost:3011/login)" = "200" ] || fatal_after_switch "Local frontend /login failed after rollback"
 [ "$(curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/login)" = "200" ] || fatal_after_switch "Public /login failed after rollback"
 [ "$(curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/absen)" = "200" ] || fatal_after_switch "Public /absen failed after rollback"
-echo "  All health checks: PASS"
+echo "  local + public health: PASS"
 
 STATE="VERIFIED"
 RECOVERY_ARMED=false

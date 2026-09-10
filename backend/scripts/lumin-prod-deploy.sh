@@ -75,6 +75,57 @@ PERSISTENT_PATHS=()
 
 fatal_preflight() { echo ""; echo "FATAL (preflight — no mutation occurred): $1"; exit 1; }
 
+# Verify the restored PAIR: both components present + services + health
+verify_pair_after_recovery() {
+  local ok=0
+  echo ""
+  echo "--- Post-recovery verification ---"
+  # Pair integrity
+  [ -d "$APP_DIR/backend" ] || { echo "  MISSING: $APP_DIR/backend"; ok=1; }
+  [ -d "$APP_DIR/frontend" ] || { echo "  MISSING: $APP_DIR/frontend"; ok=1; }
+  if [ "$ok" -eq 0 ]; then
+    echo "  pair: backend + frontend both present"
+  else
+    echo "  pair: INCOMPLETE — manual intervention required"
+  fi
+  # Service state
+  local bs fs
+  bs="$(systemctl is-active faztrack-attendance-lumin.service 2>/dev/null || echo unknown)"
+  fs="$(systemctl is-active faztrack-attendance-lumin-web.service 2>/dev/null || echo unknown)"
+  echo "  systemd backend : $bs"
+  echo "  systemd frontend: $fs"
+  [ "$bs" = "active" ] || ok=1
+  [ "$fs" = "active" ] || ok=1
+  # Local health
+  if curl -sf http://localhost:8011/health/live > /dev/null 2>&1; then
+    echo "  local backend health : PASS"
+  else
+    echo "  local backend health : FAIL"; ok=1
+  fi
+  if [ "$(curl -sf -o /dev/null -w '%{http_code}' http://localhost:3011/login 2>/dev/null)" = "200" ]; then
+    echo "  local frontend /login: PASS"
+  else
+    echo "  local frontend /login: FAIL"; ok=1
+  fi
+  # Public health
+  if [ "$(curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/login 2>/dev/null)" = "200" ]; then
+    echo "  public /login        : PASS"
+  else
+    echo "  public /login        : FAIL"; ok=1
+  fi
+  if [ "$(curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/absen 2>/dev/null)" = "200" ]; then
+    echo "  public /absen        : PASS"
+  else
+    echo "  public /absen        : FAIL"; ok=1
+  fi
+  if [ "$ok" -eq 0 ]; then
+    echo "  RESULT: pair restored and healthy"
+  else
+    echo "  RESULT: RECOVERY INCOMPLETE — inspect paths above"
+  fi
+  return "$ok"
+}
+
 recover() {
   # State-aware paired recovery. Never deletes anything.
   echo ""
@@ -101,6 +152,7 @@ recover() {
       fi
       $DRY_RUN || { sudo systemctl start faztrack-attendance-lumin.service 2>/dev/null || true
                     sudo systemctl start faztrack-attendance-lumin-web.service 2>/dev/null || true; }
+      $DRY_RUN || verify_pair_after_recovery || true
       ;;
     BACKEND_ACTIVATED|FRONTEND_ACTIVATED|SERVICES_STARTED|VERIFYING)
       echo "Full/partial switch detected. Performing PAIRED rollback..."
@@ -127,6 +179,7 @@ recover() {
       fi
       $DRY_RUN || { sudo systemctl start faztrack-attendance-lumin.service 2>/dev/null || true
                     sudo systemctl start faztrack-attendance-lumin-web.service 2>/dev/null || true; }
+      $DRY_RUN || verify_pair_after_recovery || true
       echo ""
       echo "Recovery paths preserved (nothing deleted):"
       echo "  Failed release : ${FAILED_RELEASE:-<none>}"
@@ -172,6 +225,26 @@ mx() {
   fi
 }
 
+# ── PERSISTENT DATA FINGERPRINT HELPERS ──
+# Deterministic content digest over sorted relative paths + per-file sha256
+persist_digest() {
+  local d="$1"
+  ( cd "$d" 2>/dev/null || exit 1
+    find . -type f -printf "%P\n" 2>/dev/null | LC_ALL=C sort | while IFS= read -r f; do
+      printf "%s " "$f"
+      sha256sum -- "$f" 2>/dev/null | awk '{print $1}'
+    done
+  ) | sha256sum | awk '{print $1}'
+}
+
+persist_fingerprint() {
+  local d="$1" og cnt dg
+  og="$(stat -c "%U:%G" "$d" 2>/dev/null || echo "?:?")"
+  cnt="$(find "$d" -type f 2>/dev/null | wc -l | tr -d " ")"
+  dg="$(persist_digest "$d" 2>/dev/null || echo ERR)"
+  printf "%s:%s:%s" "$og" "$cnt" "$dg"
+}
+
 echo "=== LUMIN PRODUCTION DEPLOY V4.1 ==="
 echo "Release ID: $RELEASE_ID"
 echo "Dry-run: $DRY_RUN"
@@ -192,6 +265,12 @@ echo "--- Backup Validation ---"
 [ -f "$BACKUP_DIR/BACKUP-MANIFEST.md" ] || fatal_preflight "BACKUP-MANIFEST.md not found"
 [ -f "$BACKUP_DIR/checksums-sha256.txt" ] || fatal_preflight "checksums-sha256.txt not found (mandatory)"
 [ -f "$BACKUP_DIR/VERIFICATION-RESULT.txt" ] || fatal_preflight "VERIFICATION-RESULT.txt not found"
+grep -q "^VERIFICATION-RESULT: PASS$" "$BACKUP_DIR/VERIFICATION-RESULT.txt" \
+  || fatal_preflight "VERIFICATION-RESULT.txt does not certify PASS"
+grep -q "  VERIFICATION-RESULT.txt$" "$BACKUP_DIR/checksums-sha256.txt" \
+  || fatal_preflight "VERIFICATION-RESULT.txt not covered by checksums-sha256.txt"
+grep -q "  BACKUP-MANIFEST.md$" "$BACKUP_DIR/checksums-sha256.txt" \
+  || fatal_preflight "BACKUP-MANIFEST.md not covered by checksums-sha256.txt"
 
 BH=$(grep "^Hostname:" "$BACKUP_DIR/BACKUP-MANIFEST.md" | awk '{print $2}')
 [ "$BH" = "$(hostname)" ] || fatal_preflight "Backup hostname mismatch: $BH != $(hostname)"
@@ -221,11 +300,14 @@ echo "  Artifacts: PASS"
 
 # ── Persistent inventory (BEFORE staging) ──
 echo "--- Persistent Inventory ---"
+declare -A PERSIST_BEFORE=()
 for p in "$APP_DIR/uploads" "$APP_DIR/runtime" "$APP_DIR/persistent" \
          "$APP_DIR/backend/uploads" "$APP_DIR/backend/runtime" "$APP_DIR/backend/persistent"; do
   if [ -d "$p" ]; then
     PERSISTENT_PATHS+=("$p")
-    echo "  Found: $p ($(find "$p" -type f | wc -l) files, owner $(stat -c '%U:%G' "$p"))"
+    PERSIST_BEFORE["$p"]="$(persist_fingerprint "$p")"
+    echo "  Found: $p (fingerprint ${PERSIST_BEFORE[$p]:0:16}...)"
+    echo "         owner:group=$(stat -c "%U:%G" "$p"), files=$(find "$p" -type f | wc -l | tr -d " ")"
   fi
 done
 [ "${#PERSISTENT_PATHS[@]}" -eq 0 ] && echo "  (none present)"
@@ -364,11 +446,13 @@ if ! $DRY_RUN; then
 
   # Persistent integrity (post-switch)
   for p in "${PERSISTENT_PATHS[@]}"; do
-    if [ ! -e "$p" ]; then
-      fatal_after_switch "Persistent path missing after switch: $p"
+    [ -e "$p" ] || fatal_after_switch "Persistent path missing after switch: $p"
+    PERSIST_AFTER="$(persist_fingerprint "$p")"
+    if [ "$PERSIST_AFTER" != "${PERSIST_BEFORE[$p]}" ]; then
+      fatal_after_switch "Persistent data mismatch at $p (before=${PERSIST_BEFORE[$p]} after=$PERSIST_AFTER)"
     fi
   done
-  echo "  persistent: PASS (${#PERSISTENT_PATHS[@]} paths verified)"
+  echo "  persistent: PASS (${#PERSISTENT_PATHS[@]} paths; owner/group/file-count/content checksum matched)"
 fi
 
 # ══════════════════════════════════════════

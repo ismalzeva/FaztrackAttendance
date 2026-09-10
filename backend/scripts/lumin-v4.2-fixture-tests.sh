@@ -98,8 +98,8 @@ Hostname: $(hostname)
 ## Validation Status: PASS
 EOF
   echo "x" > "$bk/db-dump-x.dump"
+  printf 'VERIFICATION-RESULT: PASS\nverified_at: fixture\n' > "$bk/VERIFICATION-RESULT.txt"
   ( cd "$bk" && find . -type f -not -name "checksums-sha256.txt" -printf "%P\n" | sort | xargs sha256sum > checksums-sha256.txt )
-  echo "PASS" > "$bk/VERIFICATION-RESULT.txt"
 }
 
 echo "=== LUMIN V4.1 FIXTURE TESTS ==="
@@ -197,6 +197,26 @@ P="$R/app/releases/release-pair-20260101_000001"
 mkdir -p "$P/backend-old/app"
 out=$(PATH="$R/bin:$PATH" LUMIN_FIXTURE_ROOT="$R" bash "$SCRIPTS/lumin-prod-rollback.sh" --release-pair "$P" 2>&1); rc=$?
 t "T7 partial pair rejected" "1" "$rc"
+
+# ══════════════════════════════════════════
+# T8: BACKUP WITHOUT VERIFICATION-RESULT -> FATAL
+# ══════════════════════════════════════════
+R="$BASE/t8"; build_fixture "$R"; make_artifacts "$R"; make_backup "$R"
+rm -f "$R/backup/exact-id/VERIFICATION-RESULT.txt"
+( cd "$R/backup/exact-id" && find . -type f -not -name "checksums-sha256.txt" -printf "%P\n" | sort | xargs sha256sum > checksums-sha256.txt )
+out=$(cd "$R/artifacts" && PATH="$R/bin:$PATH" LUMIN_FIXTURE_ROOT="$R" \
+      bash "$SCRIPTS/lumin-prod-deploy.sh" --backup-dir "$R/backup/exact-id" 2>&1); rc=$?
+t "T8 missing VERIFICATION-RESULT -> exit1" "1" "$rc"
+
+# ══════════════════════════════════════════
+# T9: BACKUP WITH VERIFICATION-RESULT: FAIL -> FATAL
+# ══════════════════════════════════════════
+R="$BASE/t9"; build_fixture "$R"; make_artifacts "$R"; make_backup "$R"
+printf 'VERIFICATION-RESULT: FAIL\n' > "$R/backup/exact-id/VERIFICATION-RESULT.txt"
+( cd "$R/backup/exact-id" && find . -type f -not -name "checksums-sha256.txt" -printf "%P\n" | sort | xargs sha256sum > checksums-sha256.txt )
+out=$(cd "$R/artifacts" && PATH="$R/bin:$PATH" LUMIN_FIXTURE_ROOT="$R" \
+      bash "$SCRIPTS/lumin-prod-deploy.sh" --backup-dir "$R/backup/exact-id" 2>&1); rc=$?
+t "T9 VERIFICATION-RESULT:FAIL -> exit1" "1" "$rc"
 
 echo ""
 echo "=== RESULTS ==="
