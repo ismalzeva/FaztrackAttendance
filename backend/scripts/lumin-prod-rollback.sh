@@ -81,8 +81,99 @@ recover() {
         echo "  systemd frontend: $(systemctl is-active faztrack-attendance-lumin-web.service 2>/dev/null || echo unknown)"
       fi
       ;;
-    VERIFYING)
-      echo "Rollback applied but verification failed. Preserving all directories."
+    VERIFYING|OLD_UNHEALTHY)
+      # The restored OLD release failed service/health after rollback.
+      # Strategy: put the old (unhealthy) pair back into the release-pair under
+      # distinct names, restore the NEW release from failed-release, start both,
+      # then verify pair + services + health. Nothing is deleted.
+      local TS_VER
+      TS_VER="$(date +%Y%m%d_%H%M%S)"
+      echo "Old release failed service/health verification."
+      echo "Reverting to the new release preserved in failed-release..."
+
+      # 1) Move the old (unhealthy) pair aside, back under the release-pair
+      if [ -n "$RELEASE_PAIR" ] && [ -d "$RELEASE_PAIR" ]; then
+        for c in backend frontend; do
+          if [ -d "$APP_DIR/$c" ]; then
+            if [ ! -e "$RELEASE_PAIR/$c-old-unhealthy-$TS_VER" ]; then
+              mv "$APP_DIR/$c" "$RELEASE_PAIR/$c-old-unhealthy-$TS_VER" 2>/dev/null \
+                && echo "  Preserved unhealthy $c -> $RELEASE_PAIR/$c-old-unhealthy-$TS_VER"
+            else
+              echo "  WARN: target already exists for $c; leaving in place"
+            fi
+          fi
+        done
+      fi
+
+      # 2) Restore the NEW release from failed-release
+      if [ -n "$FAILED_RELEASE" ] && [ -d "$FAILED_RELEASE" ]; then
+        for c in backend frontend; do
+          if [ -d "$FAILED_RELEASE/$c" ] && [ ! -d "$APP_DIR/$c" ]; then
+            mv "$FAILED_RELEASE/$c" "$APP_DIR/$c" 2>/dev/null \
+              && echo "  Restored NEW $c from $FAILED_RELEASE/$c"
+          fi
+        done
+      else
+        echo "  ERROR: failed-release directory unavailable (${FAILED_RELEASE:-<none>})"
+      fi
+
+      # 3) Start both services
+      $DRY_RUN || { sudo systemctl start faztrack-attendance-lumin.service 2>/dev/null || true
+                    sudo systemctl start faztrack-attendance-lumin-web.service 2>/dev/null || true
+                    sleep 3; }
+
+      # 4) Verify pair + service + health
+      local REC_OK=0
+      if ! $DRY_RUN; then
+        echo "  --- verification after revert ---"
+        [ -s "$APP_DIR/backend/app/main.py" ] || { echo "  MISSING: backend release"; REC_OK=1; }
+        [ -s "$APP_DIR/frontend/.next/BUILD_ID" ] || { echo "  MISSING: frontend release"; REC_OK=1; }
+        local bs fs
+        bs="$(systemctl is-active faztrack-attendance-lumin.service 2>/dev/null || echo unknown)"
+        fs="$(systemctl is-active faztrack-attendance-lumin-web.service 2>/dev/null || echo unknown)"
+        echo "  systemd backend : $bs"
+        echo "  systemd frontend: $fs"
+        [ "$bs" = "active" ] || REC_OK=1
+        [ "$fs" = "active" ] || REC_OK=1
+        if curl -sf http://localhost:8011/health/live > /dev/null 2>&1; then
+          echo "  local backend health : PASS"
+        else
+          echo "  local backend health : FAIL"; REC_OK=1
+        fi
+        if [ "$(curl -sf -o /dev/null -w '%{http_code}' http://localhost:3011/login 2>/dev/null)" = "200" ]; then
+          echo "  local frontend /login: PASS"
+        else
+          echo "  local frontend /login: FAIL"; REC_OK=1
+        fi
+        if [ "$(curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/login 2>/dev/null)" = "200" ]; then
+          echo "  public /login        : PASS"
+        else
+          echo "  public /login        : FAIL"; REC_OK=1
+        fi
+        if [ "$(curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/absen 2>/dev/null)" = "200" ]; then
+          echo "  public /absen        : PASS"
+        else
+          echo "  public /absen        : FAIL"; REC_OK=1
+        fi
+      fi
+
+      if [ "$REC_OK" -eq 0 ]; then
+        echo ""
+        echo "  REVERT COMPLETE: system is running the PREVIOUS (new) release and is healthy."
+        echo "  ROLLBACK TARGET WAS UNHEALTHY — the requested rollback did NOT take effect."
+        echo "  This run is reported as a FAILURE (exit non-zero)."
+      else
+        echo ""
+        echo "  REVERT FAILED: system is NOT healthy after revert."
+        echo "  MANUAL INTERVENTION REQUIRED."
+        echo "  Inspect exactly these paths (nothing has been deleted):"
+        echo "    app backend      : $APP_DIR/backend"
+        echo "    app frontend     : $APP_DIR/frontend"
+        echo "    release pair     : ${RELEASE_PAIR:-<none>}"
+        echo "    failed release   : ${FAILED_RELEASE:-<none>}"
+        echo "    unhealthy (old)  : ${RELEASE_PAIR:-<none>}/backend-old-unhealthy-$TS_VER"
+        echo "                       ${RELEASE_PAIR:-<none>}/frontend-old-unhealthy-$TS_VER"
+      fi
       ;;
   esac
   echo ""

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────
-# lumin-v4.2-mutation-tests.sh
+# lumin-v4.3-mutation-tests.sh
 # REAL execute-mode mutation/failure/recovery assertions.
 # Fake systemctl/curl + throwaway fixtures. Never touches production.
 # ─────────────────────────────────────────────────────────
@@ -81,6 +81,12 @@ EOF
 
   cat > "$root/bin/curl" << 'EOF'
 #!/bin/sh
+# Marker-based health: if the active backend release carries UNHEALTHY_MARKER, fail.
+if [ -n "${FAKE_MARKER_DIR:-}" ]; then
+  if grep -qs "UNHEALTHY_MARKER" "$FAKE_MARKER_DIR/backend/app/main.py" 2>/dev/null; then
+    exit 22
+  fi
+fi
 url=""
 for a in "$@"; do case "$a" in http*) url="$a";; esac; done
 [ -n "${FAKE_FAIL_PUBLIC:-}" ] && case "$url" in *gofaztrack.com*) exit 22;; esac
@@ -199,6 +205,34 @@ t "M6 rollback exit non-zero"              "1" "$rc"
 t "M6 no partial state (backend present)"  "yes" "$([ -s "$R/app/backend/app/main.py" ] && echo yes || echo no)"
 t "M6 no partial state (frontend present)" "yes" "$([ -s "$R/app/frontend/.next/BUILD_ID" ] && echo yes || echo no)"
 t "M6 failed-rollback dir preserved"       "1" "$(failed_dirs "$R")"
+
+# ══════════════════════════════════════════════════════════
+# M7 — rollback target UNHEALTHY -> revert to NEW release from failed-release
+# ══════════════════════════════════════════════════════════
+R="$BASE/m7"; build "$R"
+# current live app = the NEW (healthy) release
+echo "NEW_HEALTHY_MARKER" > "$R/app/backend/app/main.py"
+echo "NEWBUILD" > "$R/app/frontend/.next/BUILD_ID"
+# release-pair holds the OLD release, which is UNHEALTHY
+P="$R/app/releases/release-pair-m7"
+mkdir -p "$P/backend-old/app" "$P/backend-old/.venv/bin" \
+         "$P/frontend-old/.next/standalone" "$P/frontend-old/.next/static"
+echo "UNHEALTHY_MARKER" > "$P/backend-old/app/main.py"
+printf '#!/bin/sh\nexit 0\n' > "$P/backend-old/.venv/bin/uvicorn"; chmod +x "$P/backend-old/.venv/bin/uvicorn"
+echo "OLDENVP" > "$P/backend-old/.env.lumin"
+echo "OLDSRV" > "$P/frontend-old/.next/standalone/server.js"
+echo "OLDBUILDPAIR" > "$P/frontend-old/.next/BUILD_ID"
+
+( cd "$R/artifacts" && env PATH="$R/bin:$PATH" LUMIN_FIXTURE_ROOT="$R" \
+    FAKE_MARKER_DIR="$R/app" \
+    bash "$SCRIPTS/lumin-prod-rollback.sh" --execute --release-pair "$P" ) >/dev/null 2>&1; rc=$?
+
+t "M7 exit non-zero (rollback target unhealthy)" "1" "$rc"
+t "M7 reverted to NEW release"                   "NEW_HEALTHY_MARKER" "$(head -1 "$R/app/backend/app/main.py" 2>/dev/null)"
+t "M7 frontend also reverted to NEW"             "NEWBUILD" "$(head -1 "$R/app/frontend/.next/BUILD_ID" 2>/dev/null)"
+t "M7 new release came from failed-release"      "yes" "$(find "$R/app/releases" -maxdepth 1 -type d -name 'failed-rollback-*' 2>/dev/null | head -1 | grep -q . && echo yes || echo no)"
+t "M7 unhealthy OLD pair preserved"              "yes" "$(find "$R/app/releases" -maxdepth 2 -type d -name 'backend-old-unhealthy-*' 2>/dev/null | head -1 | grep -q . && echo yes || echo no)"
+t "M7 unhealthy content preserved intact"        "UNHEALTHY_MARKER" "$(find "$R/app/releases" -path '*backend-old-unhealthy-*/app/main.py' 2>/dev/null | head -1 | xargs -r head -1)"
 
 echo ""
 echo "=== RESULTS ==="
