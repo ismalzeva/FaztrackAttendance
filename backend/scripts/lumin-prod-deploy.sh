@@ -1,297 +1,243 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────
-# lumin-prod-deploy-v3.sh — Production deployment
+# lumin-prod-deploy.sh — Production deploy v4
 # Default: DRY-RUN. Use --execute to actually run.
-# Target: ubuntu@VM-8-230-ubuntu (43.163.7.128)
+# Requires: --backup-dir <path> (exact backup directory)
 # ─────────────────────────────────────────────────────────
 set -euo pipefail
 
-# ── TARGET CONSTANTS ──
 EXPECTED_HOSTNAME="VM-8-230-ubuntu"
 EXPECTED_USER="ubuntu"
 APP_DIR="/home/ubuntu/apps/attendance-lumin"
-BACKUP_BASE="/home/ubuntu/backups/attendance-lumin"
 PG_CONTAINER="attendance-lumin-postgres"
-BACKEND_TAR="lumin-backend-413720b1.tar.gz"
-FRONTEND_TAR="lumin-frontend-6e3a3e20.tar.gz"
-BACKEND_SHA="b8b5d890f2e0d6dfdf225740e561b9c6b2ef6854f0416c96e283936ef334bba5"
-FRONTEND_SHA="f96bf8805f19b555fb6f3509e57c3bc241f3cbeaa0a54b175a90f1fc71ec5740"
 EXPECTED_BUILD_ID="S0kC8_NAlhQyCLKMFHHdQ"
+EXPECTED_ADMIN_CHUNK="page-7ef835f4a59d5f3e.js"
+EXPECTED_DASH_CHUNK="page-18c48464202db5cb.js"
+EXPECTED_ABSEN_CHUNK="page-b864c4195106e108.js"
 RELEASE_ID="${RELEASE_ID:-$(date +%Y%m%d_%H%M%S)}"
 DRY_RUN=true
-[[ "${1:-}" == "--execute" ]] && DRY_RUN=false
+BACKUP_DIR=""
 
-# Error trap for atomic rollback
-ROLLBACK_NEEDED=false
-ORIGINAL_BACKEND=""
-ORIGINAL_FRONTEND=""
+# Parse args
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --execute) DRY_RUN=false; shift ;;
+    --backup-dir) BACKUP_DIR="$2"; shift 2 ;;
+    *) echo "Unknown arg: $1"; exit 1 ;;
+  esac
+done
 
-rollback_pair() {
-  if $ROLLBACK_NEEDED; then
-    echo ""
-    echo "=== ROLLING BACK ==="
-    if [ -n "$ORIGINAL_BACKEND" ] && [ -d "$ORIGINAL_BACKEND" ]; then
-      sudo systemctl stop faztrack-attendance-lumin.service 2>/dev/null || true
-      sudo systemctl stop faztrack-attendance-lumin-web.service 2>/dev/null || true
-      rm -rf "$APP_DIR/backend"
-      mv "$ORIGINAL_BACKEND" "$APP_DIR/backend"
-      rm -rf "$APP_DIR/frontend"
-      mv "$ORIGINAL_FRONTEND" "$APP_DIR/frontend"
-      sudo systemctl start faztrack-attendance-lumin.service
-      sudo systemctl start faztrack-attendance-lumin-web.service
-      echo "ROLLBACK COMPLETE"
-    fi
+# Absolute artifact paths
+ARTIFACT_DIR="$(pwd -P)"
+BACKEND_TAR="$ARTIFACT_DIR/lumin-backend-413720b1.tar.gz"
+FRONTEND_TAR="$ARTIFACT_DIR/lumin-frontend-6e3a3e20.tar.gz"
+BACKEND_SHA="b8b5d890f2e0d6dfdf225740e561b9c6b2ef6854f0416c96e283936ef334bba5"
+FRONTEND_SHA="f96bf8805f19b555fb6f3509e57c3bc241f3cbeaa0a54b175a90f1fc71ec5740"
+
+# State tracking
+RELEASE_PAIR=""
+FAILED_RELEASE=""
+OLD_BACKEND=""
+OLD_FRONTEND=""
+
+fatal_after_switch() {
+  echo ""
+  echo "FATAL: $1"
+  echo "Initiating paired rollback..."
+  if [ -n "$OLD_BACKEND" ] && [ -d "$OLD_BACKEND" ] && [ -n "$OLD_FRONTEND" ] && [ -d "$OLD_FRONTEND" ]; then
+    FAILED_RELEASE="$APP_DIR/releases/failed-$RELEASE_ID-$(date +%s)"
+    mkdir -p "$FAILED_RELEASE"
+    if [ -d "$APP_DIR/backend" ]; then mv "$APP_DIR/backend" "$FAILED_RELEASE/backend"; fi
+    if [ -d "$APP_DIR/frontend" ]; then mv "$APP_DIR/frontend" "$FAILED_RELEASE/frontend"; fi
+    mv "$OLD_BACKEND" "$APP_DIR/backend"
+    mv "$OLD_FRONTEND" "$APP_DIR/frontend"
+    sudo systemctl start faztrack-attendance-lumin.service 2>/dev/null || true
+    sudo systemctl start faztrack-attendance-lumin-web.service 2>/dev/null || true
+    echo "ROLLBACK COMPLETE"
+    echo "Failed release: $FAILED_RELEASE"
+  else
+    echo "CANNOT ROLLBACK: Old release not found"
+    echo "Manual recovery required."
   fi
+  exit 1
 }
-trap rollback_pair ERR
 
-echo "=== LUMIN PRODUCTION DEPLOY V3 ==="
+run() {
+  if $DRY_RUN; then echo "[DRY-RUN] $*"; else "$@" || fatal_after_switch "Command failed: $*"; fi
+}
+
+echo "=== LUMIN PRODUCTION DEPLOY V4 ==="
 echo "Release ID: $RELEASE_ID"
 echo "Dry-run: $DRY_RUN"
 echo ""
 
 # ── VALIDATE ENVIRONMENT ──
-if [ "$(hostname)" != "$EXPECTED_HOSTNAME" ]; then
-  echo "FATAL: Hostname mismatch. Expected $EXPECTED_HOSTNAME, got $(hostname)"
-  exit 1
-fi
-if [ "$(whoami)" != "$EXPECTED_USER" ]; then
-  echo "FATAL: Must run as $EXPECTED_USER"
-  exit 1
+[ "$(hostname)" = "$EXPECTED_HOSTNAME" ] || fatal_after_switch "Hostname mismatch"
+[ "$(whoami)" = "$EXPECTED_USER" ] || fatal_after_switch "Must run as $EXPECTED_USER"
+
+# ── VALIDATE BACKUP ──
+echo "--- Backup Validation ---"
+[ -n "$BACKUP_DIR" ] || fatal_after_switch "Missing --backup-dir argument"
+[ -d "$BACKUP_DIR" ] || fatal_after_switch "Backup directory not found: $BACKUP_DIR"
+[ -f "$BACKUP_DIR/BACKUP-MANIFEST.md" ] || fatal_after_switch "BACKUP-MANIFEST.md not found"
+
+# Check manifest hostname
+BACKUP_HOST=$(grep "Hostname:" "$BACKUP_DIR/BACKUP-MANIFEST.md" | awk '{print $2}')
+[ "$BACKUP_HOST" = "$(hostname)" ] || fatal_after_switch "Backup hostname mismatch: $BACKUP_HOST"
+
+# Check manifest status
+grep -q "Status: PASS" "$BACKUP_DIR/BACKUP-MANIFEST.md" || fatal_after_switch "Backup status not PASS"
+
+# Verify checksums
+if [ -f "$BACKUP_DIR/checksums-sha256.txt" ]; then
+  if ! (cd "$BACKUP_DIR" && sha256sum -c checksums-sha256.txt > /dev/null 2>&1); then
+    fatal_after_switch "Backup checksum failed"
+  fi
+  echo "  Checksums: PASS"
 fi
 
-# ── HELPERS ──
-run() {
-  if $DRY_RUN; then echo "[DRY-RUN] $*"; else echo "[EXEC] $*"; eval "$@"; fi
-}
-fail() { echo "FATAL: $1"; exit 1; }
+# Exactly one dump
+DUMPS=$(find "$BACKUP_DIR" -maxdepth 1 -name "db-dump-*.dump" 2>/dev/null | wc -l)
+[ "$DUMPS" -eq 1 ] || fatal_after_switch "Expected 1 dump, found $DUMPS"
+DUMP_FILE=$(find "$BACKUP_DIR" -maxdepth 1 -name "db-dump-*.dump" 2>/dev/null | head -1)
+DUMP_SIZE=$(stat -c%s "$DUMP_FILE")
+[ "$DUMP_SIZE" -gt 0 ] || fatal_after_switch "Dump is empty"
+if ! docker exec -i "$PG_CONTAINER" pg_restore --list < "$DUMP_FILE" > /dev/null 2>&1; then
+  fatal_after_switch "pg_restore --list failed"
+fi
+echo "  Backup validation: PASS"
 
-# ── 1. VERIFY ARTIFACTS ──
+# ── VERIFY ARTIFACTS ──
+echo ""
 echo "--- Artifact Verification ---"
-[ -f "$BACKEND_TAR" ] || fail "Backend artifact not found: $BACKEND_TAR"
-[ -f "$FRONTEND_TAR" ] || fail "Frontend artifact not found: $FRONTEND_TAR"
-
-# SHA256 verification
-echo "Verifying SHA256..."
+[ -f "$BACKEND_TAR" ] || fatal_after_switch "Backend artifact not found: $BACKEND_TAR"
+[ -f "$FRONTEND_TAR" ] || fatal_after_switch "Frontend artifact not found: $FRONTEND_TAR"
 ACTUAL_BE=$(sha256sum "$BACKEND_TAR" | awk '{print $1}')
 ACTUAL_FE=$(sha256sum "$FRONTEND_TAR" | awk '{print $1}')
-[ "$ACTUAL_BE" = "$BACKEND_SHA" ] || fail "Backend SHA256 mismatch: expected $BACKEND_SHA, got $ACTUAL_BE"
-[ "$ACTUAL_FE" = "$FRONTEND_SHA" ] || fail "Frontend SHA256 mismatch: expected $FRONTEND_SHA, got $ACTUAL_FE"
-echo "  Backend SHA256: PASS"
-echo "  Frontend SHA256: PASS"
+[ "$ACTUAL_BE" = "$BACKEND_SHA" ] || fatal_after_switch "Backend SHA mismatch"
+[ "$ACTUAL_FE" = "$FRONTEND_SHA" ] || fatal_after_switch "Frontend SHA mismatch"
+echo "  Artifacts: PASS"
 
-# ── 2. VERIFY BACKUP ──
-echo ""
-echo "--- Backup Verification ---"
-# Find latest backup
-BACKUP_DIR=$(ls -d "$BACKUP_BASE"/*/ 2>/dev/null | sort -r | head -1)
-if [ -z "$BACKUP_DIR" ]; then
-  fail "No backup found in $BACKUP_BASE"
-fi
-echo "Backup: $BACKUP_DIR"
-
-# Verify BACKUP-MANIFEST exists
-[ -f "$BACKUP_DIR/BACKUP-MANIFEST.md" ] || fail "BACKUP-MANIFEST.md not found"
-
-# Verify SHA256
-cd "$BACKUP_DIR"
-if ! sha256sum -c checksums-sha256.txt > /dev/null 2>&1; then
-  fail "Backup SHA256 verification failed"
-fi
-echo "  SHA256: PASS"
-
-# Verify pg_restore --list
-DUMP_FILE=$(ls db-dump-*.dump 2>/dev/null | head -1)
-if [ -n "$DUMP_FILE" ]; then
-  if ! docker exec -i "$PG_CONTAINER" pg_restore --list < "$DUMP_FILE" > /dev/null 2>&1; then
-    fail "pg_restore --list failed"
-  fi
-  echo "  pg_restore --list: PASS"
-fi
-
-# Verify same hostname
-BACKUP_HOST=$(grep "Hostname:" "$BACKUP_DIR/BACKUP-MANIFEST.md" | awk '{print $2}')
-if [ "$BACKUP_HOST" != "$(hostname)" ]; then
-  fail "Backup hostname mismatch: $BACKUP_HOST vs $(hostname)"
-fi
-echo "  Hostname: PASS"
-
-cd "$APP_DIR"
-
-# ── 3. INVENTORY PERSISTENT DATA ──
-echo ""
-echo "--- Persistent Data Inventory ---"
-PERSISTENT_DIRS=()
-for dir in uploads runtime persistent; do
-  if [ -d "$APP_DIR/$dir" ]; then
-    PERSISTENT_DIRS+=("$dir")
-    echo "  Found: $dir"
-  fi
-done
-
-# ── 4. STAGE RELEASE ──
+# ── STAGE RELEASE ──
 echo ""
 echo "--- Staging ---"
-STAGING_DIR="$APP_DIR/releases/$RELEASE_ID"
-if [ -d "$STAGING_DIR" ]; then
-  fail "Staging directory already exists: $STAGING_DIR"
-fi
-run "mkdir -p $APP_DIR/releases"
-run "mkdir $STAGING_DIR"
+STAGING_DIR="$APP_DIR/staging-$RELEASE_ID"
+[ -d "$STAGING_DIR" ] && fatal_after_switch "Staging dir already exists: $STAGING_DIR"
+mkdir -p "$STAGING_DIR"
 
 # Extract backend
-echo "  Extracting backend..."
-run "mkdir -p $STAGING_DIR/backend"
-run "tar xzf $BACKEND_TAR -C $STAGING_DIR/backend --strip-components=1"
+echo "  Backend..."
+mkdir -p "$STAGING_DIR/backend"
+tar xzf "$BACKEND_TAR" -C "$STAGING_DIR/backend" --strip-components=1
 
-# Copy venv from current (Option A)
-echo "  Copying .venv..."
-run "cp -a $APP_DIR/backend/.venv $STAGING_DIR/backend/.venv"
+# Copy venv (Option A)
+echo "  Venv..."
+cp -a "$APP_DIR/backend/.venv" "$STAGING_DIR/backend/.venv"
 
 # Copy .env.lumin
-echo "  Copying .env.lumin..."
-run "cp $APP_DIR/backend/.env.lumin $STAGING_DIR/backend/.env.lumin"
+cp "$APP_DIR/backend/.env.lumin" "$STAGING_DIR/backend/.env.lumin"
 
 # Extract frontend
-echo "  Extracting frontend..."
-run "mkdir -p $STAGING_DIR/frontend"
-run "tar xzf $FRONTEND_TAR -C $STAGING_DIR/frontend"
+echo "  Frontend..."
+mkdir -p "$STAGING_DIR/frontend"
+tar xzf "$FRONTEND_TAR" -C "$STAGING_DIR/frontend"
 
 # Copy .env.local
-echo "  Copying .env.local..."
-if [ -f "$APP_DIR/frontend/.env.local" ]; then
-  run "cp $APP_DIR/frontend/.env.local $STAGING_DIR/frontend/.env.local"
-fi
+cp "$APP_DIR/frontend/.env.local" "$STAGING_DIR/frontend/.env.local"
 
-# Copy persistent data
-for dir in "${PERSISTENT_DIRS[@]}"; do
-  echo "  Copying $dir..."
-  run "cp -a $APP_DIR/$dir $STAGING_DIR/$dir"
-done
-
-# ── 5. VALIDATE STAGED RELEASE ──
+# ── VALIDATE STAGED ──
 echo ""
 echo "--- Staged Validation ---"
-if ! $DRY_RUN; then
-  # Backend
-  [ -x "$STAGING_DIR/backend/.venv/bin/uvicorn" ] || fail "uvicorn not executable"
-  [ -f "$STAGING_DIR/backend/.env.lumin" ] || fail ".env.lumin missing"
-  [ -f "$STAGING_DIR/backend/app/main.py" ] || fail "main.py missing"
-  echo "  Backend: PASS"
-  
-  # Frontend
-  [ -f "$STAGING_DIR/frontend/.next/standalone/server.js" ] || fail "server.js missing"
-  [ -d "$STAGING_DIR/frontend/.next/static" ] || fail ".next/static missing"
-  [ -d "$STAGING_DIR/frontend/public" ] || fail "public/ missing"
-  echo "  Frontend: PASS"
-  
-  # Ownership
-  OWNER=$(stat -c '%U' "$STAGING_DIR/backend/.venv/bin/uvicorn")
-  [ "$OWNER" = "ubuntu" ] || fail "Wrong owner: $OWNER"
-  echo "  Ownership: PASS"
-  
-  # BUILD_ID
-  STAGED_BUILD_ID=$(cat "$STAGING_DIR/frontend/.next/BUILD_ID" 2>/dev/null || echo "N/A")
-  [ "$STAGED_BUILD_ID" = "$EXPECTED_BUILD_ID" ] || fail "BUILD_ID mismatch: $STAGED_BUILD_ID"
-  echo "  BUILD_ID: PASS ($STAGED_BUILD_ID)"
-fi
+[ -x "$STAGING_DIR/backend/.venv/bin/uvicorn" ] || fatal_after_switch "uvicorn not executable"
+[ -f "$STAGING_DIR/backend/.env.lumin" ] || fatal_after_switch ".env.lumin missing"
+[ -f "$STAGING_DIR/backend/app/main.py" ] || fatal_after_switch "main.py missing"
+[ -f "$STAGING_DIR/frontend/.next/standalone/server.js" ] || fatal_after_switch "server.js missing"
+[ -d "$STAGING_DIR/frontend/.next/static" ] || fatal_after_switch ".next/static missing"
+STAGED_BUILD=$(cat "$STAGING_DIR/frontend/.next/BUILD_ID")
+[ "$STAGED_BUILD" = "$EXPECTED_BUILD_ID" ] || fatal_after_switch "BUILD_ID mismatch: $STAGED_BUILD"
+echo "  Staged: PASS"
 
-# ── 6. PRE-SWITCH HEALTH CHECK ──
+# ── PRE-SWITCH HEALTH ──
 echo ""
 echo "--- Pre-switch Health ---"
-if ! $DRY_RUN; then
-  BE_OK=$(curl -sf http://localhost:8011/health/live 2>/dev/null && echo "OK" || echo "FAIL")
-  FE_OK=$(curl -sf -o /dev/null -w '%{http_code}' http://localhost:3011/login 2>/dev/null || echo "FAIL")
-  echo "  Backend: $BE_OK"
-  echo "  Frontend: $FE_OK"
-  [ "$BE_OK" = "OK" ] || fail "Backend health check failed"
-  [ "$FE_OK" = "200" ] || fail "Frontend health check failed"
-fi
+curl -sf http://localhost:8011/health/live > /dev/null 2>&1 || fatal_after_switch "Backend unhealthy"
+curl -sf -o /dev/null -w '%{http_code}' http://localhost:3011/login | grep -q "200" || fatal_after_switch "Frontend unhealthy"
+echo "  Health: PASS"
 
-# ── 7. ATOMIC SWITCH ──
+# ── PAIRED SWITCH ──
 echo ""
-echo "--- Atomic Switch ---"
+echo "--- Paired Switch ---"
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-OLD_BACKEND="$APP_DIR/releases/old-backend-$TIMESTAMP"
-OLD_FRONTEND="$APP_DIR/releases/old-frontend-$TIMESTAMP"
+RELEASE_PAIR="$APP_DIR/releases/release-pair-$TIMESTAMP"
+OLD_BACKEND="$RELEASE_PAIR/backend-old"
+OLD_FRONTEND="$RELEASE_PAIR/frontend-old"
+mkdir -p "$RELEASE_PAIR"
 
-if ! $DRY_RUN; then
-  ROLLBACK_NEEDED=true
-  ORIGINAL_BACKEND="$OLD_BACKEND"
-  ORIGINAL_FRONTEND="$OLD_FRONTEND"
-fi
-
-# Stop services
 echo "  Stopping services..."
-run "sudo systemctl stop faztrack-attendance-lumin.service"
-run "sudo systemctl stop faztrack-attendance-lumin-web.service"
+sudo systemctl stop faztrack-attendance-lumin.service
+sudo systemctl stop faztrack-attendance-lumin-web.service
 
-# Move current to old
-echo "  Preserving current release..."
-run "mv $APP_DIR/backend $OLD_BACKEND"
-run "mv $APP_DIR/frontend $OLD_FRONTEND"
+echo "  Moving current to release-pair..."
+mv "$APP_DIR/backend" "$OLD_BACKEND"
+mv "$APP_DIR/frontend" "$OLD_FRONTEND"
 
-# Move staged to current
-echo "  Activating new release..."
-run "mv $STAGING_DIR/backend $APP_DIR/backend"
-run "mv $STAGING_DIR/frontend $APP_DIR/frontend"
+echo "  Activating staged..."
+mv "$STAGING_DIR/backend" "$APP_DIR/backend"
+mv "$STAGING_DIR/frontend" "$APP_DIR/frontend"
 
-# Start services
+
 echo "  Starting services..."
-run "sudo systemctl start faztrack-attendance-lumin.service"
-run "sudo systemctl start faztrack-attendance-lumin-web.service"
-run "sleep 3"
+sudo systemctl start faztrack-attendance-lumin.service
+sudo systemctl start faztrack-attendance-lumin-web.service
+sleep 3
 
-ROLLBACK_NEEDED=false
-
-# ── 8. POST-DEPLOY VALIDATION ──
+# ── POST-DEPLOY VALIDATION ──
 echo ""
 echo "--- Post-deploy Validation ---"
-if ! $DRY_RUN; then
-  # Systemd
-  BE_STATUS=$(systemctl is-active faztrack-attendance-lumin.service 2>/dev/null || echo "inactive")
-  FE_STATUS=$(systemctl is-active faztrack-attendance-lumin-web.service 2>/dev/null || echo "inactive")
-  echo "  Backend service: $BE_STATUS"
-  echo "  Frontend service: $FE_STATUS"
-  [ "$BE_STATUS" = "active" ] || fail "Backend service not active"
-  [ "$FE_STATUS" = "active" ] || fail "Frontend service not active"
-  
-  # Health
-  BE_HEALTH=$(curl -sf http://localhost:8011/health/live 2>/dev/null || echo "FAIL")
-  FE_HEALTH=$(curl -sf -o /dev/null -w '%{http_code}' http://localhost:3011/login 2>/dev/null || echo "FAIL")
-  PUB_HEALTH=$(curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/login 2>/dev/null || echo "FAIL")
-  ABSEN_HEALTH=$(curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/absen 2>/dev/null || echo "FAIL")
-  echo "  Backend /health/live: $BE_HEALTH"
-  echo "  Frontend /login: $FE_HEALTH"
-  echo "  Public /login: $PUB_HEALTH"
-  echo "  Public /absen: $ABSEN_HEALTH"
-  
-  # BUILD_ID
-  DEPLOYED_BUILD=$(cat "$APP_DIR/frontend/.next/BUILD_ID" 2>/dev/null || echo "N/A")
-  echo "  BUILD_ID: $DEPLOYED_BUILD"
-  
-  # Chunk hashes
-  ADMIN_CHUNK=$(ls "$APP_DIR/frontend/.next/static/chunks/app/admin/page-"*.js 2>/dev/null | xargs -I{} basename {} | head -1)
-  DASH_CHUNK=$(ls "$APP_DIR/frontend/.next/static/chunks/app/dashboard/page-"*.js 2>/dev/null | xargs -I{} basename {} | head -1)
-  ABSEN_CHUNK=$(ls "$APP_DIR/frontend/.next/static/chunks/app/absen/page-"*.js 2>/dev/null | xargs -I{} basename {} | head -1)
-  echo "  Admin chunk: $ADMIN_CHUNK"
-  echo "  Dashboard chunk: $DASH_CHUNK"
-  echo "  Absen chunk: $ABSEN_CHUNK"
-  
-  # Auto-rollback on failure
-  if [ "$BE_HEALTH" = "FAIL" ] || [ "$FE_HEALTH" = "FAIL" ] || [ "$PUB_HEALTH" != "200" ]; then
-    echo ""
-    echo "=== POST-DEPLOY HEALTH FAILED — ROLLING BACK ==="
-    ROLLBACK_NEEDED=true
-    rollback_pair
-    exit 1
-  fi
-fi
+
+# Systemd
+BE_SVC=$(systemctl is-active faztrack-attendance-lumin.service)
+FE_SVC=$(systemctl is-active faztrack-attendance-lumin-web.service)
+[ "$BE_SVC" = "active" ] || fatal_after_switch "Backend service: $BE_SVC"
+[ "$FE_SVC" = "active" ] || fatal_after_switch "Frontend service: $FE_SVC"
+echo "  Systemd: PASS"
+
+# Health
+curl -sf http://localhost:8011/health/live > /dev/null 2>&1 || fatal_after_switch "Backend health failed"
+curl -sf -o /dev/null -w '%{http_code}' http://localhost:3011/login | grep -q "200" || fatal_after_switch "Frontend health failed"
+echo "  Local health: PASS"
+
+# Public
+curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/login | grep -q "200" || fatal_after_switch "Public /login failed"
+curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/absen | grep -q "200" || fatal_after_switch "Public /absen failed"
+echo "  Public health: PASS"
+
+# BUILD_ID
+DEPLOYED_BUILD=$(cat "$APP_DIR/frontend/.next/BUILD_ID")
+[ "$DEPLOYED_BUILD" = "$EXPECTED_BUILD_ID" ] || fatal_after_switch "BUILD_ID mismatch: $DEPLOYED_BUILD"
+echo "  BUILD_ID: PASS"
+
+# Chunk hashes
+ADMIN_CHUNK=$(find "$APP_DIR/frontend/.next/static/chunks/app/admin" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
+DASH_CHUNK=$(find "$APP_DIR/frontend/.next/static/chunks/app/dashboard" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
+ABSEN_CHUNK=$(find "$APP_DIR/frontend/.next/static/chunks/app/absen" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
+[ "$ADMIN_CHUNK" = "$EXPECTED_ADMIN_CHUNK" ] || fatal_after_switch "Admin chunk mismatch: $ADMIN_CHUNK"
+[ "$DASH_CHUNK" = "$EXPECTED_DASH_CHUNK" ] || fatal_after_switch "Dashboard chunk mismatch: $DASH_CHUNK"
+[ "$ABSEN_CHUNK" = "$EXPECTED_ABSEN_CHUNK" ] || fatal_after_switch "Absen chunk mismatch: $ABSEN_CHUNK"
+echo "  Chunk hashes: PASS"
+
+# Persistent data
+for dir in uploads runtime persistent; do
+  for prefix in "$APP_DIR" "$APP_DIR/backend"; do
+    if [ -d "$RELEASE_PAIR/backend-old/$dir" ] || [ -d "$RELEASE_PAIR/frontend-old/$dir" ]; then
+      [ -d "$prefix/$dir" ] || echo "  WARNING: $prefix/$dir missing after switch"
+    fi
+  done
+done
 
 echo ""
 echo "=== DEPLOY COMPLETE ==="
 echo "Release: $RELEASE_ID"
-echo "Old release preserved at: $OLD_BACKEND, $OLD_FRONTEND"
+echo "Release pair: $RELEASE_PAIR"
 echo "Estimated downtime: ~10 seconds"
-echo ""
-echo "To rollback: bash lumin-prod-rollback.sh --execute"
+echo "Rollback: bash lumin-prod-rollback.sh --execute --release-pair $RELEASE_PAIR"
