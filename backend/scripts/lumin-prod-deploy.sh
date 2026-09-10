@@ -45,19 +45,16 @@ if [ -n "${LUMIN_FIXTURE_ROOT:-}" ]; then
   _fx_dir="$(pwd -P)"
   [ -f "$_fx_dir/lumin-backend-413720b1.tar.gz" ] && BACKEND_SHA="$(sha256sum "$_fx_dir/lumin-backend-413720b1.tar.gz" | awk '{print $1}')"
   [ -f "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" ] && FRONTEND_SHA="$(sha256sum "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" | awk '{print $1}')"
-  # fixture: read expected BUILD_ID/chunks from the ARTIFACT (not the live release)
+  # fixture: read expected BUILD_ID/chunks from the ARTIFACT via stdout (no temp dir)
   if [ -f "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" ]; then
-    _fx_tmp="$(mktemp -d)"
-    if tar xzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" -C "$_fx_tmp" 2>/dev/null; then
-      [ -f "$_fx_tmp/.next/BUILD_ID" ] && EXPECTED_BUILD_ID="$(cat "$_fx_tmp/.next/BUILD_ID")"
-      _fx_ac=$(find "$_fx_tmp/.next/static/chunks/app/admin" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
-      _fx_dc=$(find "$_fx_tmp/.next/static/chunks/app/dashboard" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
-      _fx_bc=$(find "$_fx_tmp/.next/static/chunks/app/absen" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
-      [ -n "$_fx_ac" ] && EXPECTED_ADMIN_CHUNK="$_fx_ac"
-      [ -n "$_fx_dc" ] && EXPECTED_DASH_CHUNK="$_fx_dc"
-      [ -n "$_fx_bc" ] && EXPECTED_ABSEN_CHUNK="$_fx_bc"
-    fi
-    rm -rf "$_fx_tmp" 2>/dev/null || true
+    _fx_bid="$(tar xzOf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" .next/BUILD_ID 2>/dev/null | head -1 || true)"
+    [ -n "$_fx_bid" ] && EXPECTED_BUILD_ID="$_fx_bid"
+    _fx_ac=$(tar tzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" 2>/dev/null | grep "^.next/static/chunks/app/admin/page-.*\.js$" | head -1 | xargs -r basename || true)
+    _fx_dc=$(tar tzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" 2>/dev/null | grep "^.next/static/chunks/app/dashboard/page-.*\.js$" | head -1 | xargs -r basename || true)
+    _fx_bc=$(tar tzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" 2>/dev/null | grep "^.next/static/chunks/app/absen/page-.*\.js$" | head -1 | xargs -r basename || true)
+    [ -n "$_fx_ac" ] && EXPECTED_ADMIN_CHUNK="$_fx_ac"
+    [ -n "$_fx_dc" ] && EXPECTED_DASH_CHUNK="$_fx_dc"
+    [ -n "$_fx_bc" ] && EXPECTED_ABSEN_CHUNK="$_fx_bc"
   fi
   echo "############################################################"
   echo "# FIXTURE MODE ACTIVE — NOT PRODUCTION                        #"
