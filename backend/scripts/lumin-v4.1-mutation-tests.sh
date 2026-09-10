@@ -108,7 +108,7 @@ echo ""
 # M1: BACKEND START FAILS → PAIRED ROLLBACK
 # ══════════════════════════════════════════
 R="$BASE/m1"; build "$R"
-out=$(FAKE_FAIL_START_BACKEND=1 run_deploy "$R" 2>&1); rc=$?
+FAKE_FAIL_START_BACKEND=1 run_deploy "$R" 2>&1 > /dev/null 2>&1; rc=$?
 t "M1 exit non-zero" "1" "$rc"
 t "M1 original backend restored" "OLD_BACKEND_MARKER" "$(cat "$R/app/backend/app/main.py" 2>/dev/null || echo MISSING)"
 t "M1 original frontend restored" "OLDBUILD" "$(cat "$R/app/frontend/.next/BUILD_ID" 2>/dev/null || echo MISSING)"
@@ -122,7 +122,7 @@ t "M1 no unmatched pair" "0" "$([ -f "$R/app/backend/app/main.py" ] && [ -f "$R/
 # M2: FRONTEND START FAILS → PAIRED ROLLBACK
 # ══════════════════════════════════════════
 R="$BASE/m2"; build "$R"
-out=$(FAKE_FAIL_START_FRONTEND=1 run_deploy "$R" 2>&1); rc=$?
+FAKE_FAIL_START_FRONTEND=1 run_deploy "$R" 2>&1 > /dev/null 2>&1; rc=$?
 t "M2 exit non-zero" "1" "$rc"
 t "M2 backend restored" "OLD_BACKEND_MARKER" "$(cat "$R/app/backend/app/main.py" 2>/dev/null || echo MISSING)"
 t "M2 frontend restored" "OLDBUILD" "$(cat "$R/app/frontend/.next/BUILD_ID" 2>/dev/null || echo MISSING)"
@@ -132,7 +132,7 @@ t "M2 no unmatched pair" "0" "$([ -f "$R/app/backend/app/main.py" ] && [ -f "$R/
 # M3: PUBLIC HEALTH FAILS → PAIRED ROLLBACK
 # ══════════════════════════════════════════
 R="$BASE/m3"; build "$R"
-out=$(FAKE_FAIL_PUBLIC=1 run_deploy "$R" 2>&1); rc=$?
+FAKE_FAIL_PUBLIC=1 run_deploy "$R" 2>&1 > /dev/null 2>&1; rc=$?
 t "M3 exit non-zero" "1" "$rc"
 t "M3 backend restored" "OLD_BACKEND_MARKER" "$(cat "$R/app/backend/app/main.py" 2>/dev/null || echo MISSING)"
 t "M3 frontend restored" "OLDBUILD" "$(cat "$R/app/frontend/.next/BUILD_ID" 2>/dev/null || echo MISSING)"
@@ -141,12 +141,12 @@ t "M3 frontend restored" "OLDBUILD" "$(cat "$R/app/frontend/.next/BUILD_ID" 2>/d
 # M4: BOTH SUCCEED → VERIFIED, NEW CONTENT ACTIVE
 # ══════════════════════════════════════════
 R="$BASE/m4"; build "$R"
-out=$(run_deploy "$R" 2>&1); rc=$?
+run_deploy "$R" > /dev/null 2>&1; rc=$?
 t "M4 exit 0" "0" "$rc"
 t "M4 new backend active" "NEW_BACKEND_MARKER" "$(cat "$R/app/backend/app/main.py" 2>/dev/null || echo MISSING)"
 t "M4 new frontend active" "S0kC8_NAlhQyCLKMFHHdQ" "$(cat "$R/app/frontend/.next/BUILD_ID" 2>/dev/null || echo MISSING)"
 t "M4 persistent copied into staged backend" "oldpersist" "$(cat "$R/app/backend/uploads/f.txt" 2>/dev/null || echo MISSING)"
-t "M4 release pair preserved" "0" "$([ -d "$R/app/releases/release-pair-"* ] 2>/dev/null && echo 0 || echo 0)"
+t "M4 release pair preserved" "0" "$(find "$R/app/releases" -maxdepth 1 -name "release-pair-*" -type d 2>/dev/null | head -1 | grep -q . && echo 0 || echo 1)"
 
 # ══════════════════════════════════════════
 # M5: BACKEND PERSISTENT MISSING AFTER SWITCH → ROLLBACK
@@ -155,7 +155,7 @@ R="$BASE/m5"; build "$R"
 # make staged copy of persistent fail by removing source persistent dir mid-flight:
 # simulate by deleting the persistent source right before deploy (so staged copy is absent)
 rm -rf "$R/app/backend/uploads"
-out=$(run_deploy "$R" 2>&1); rc=$?
+run_deploy "$R" > /dev/null 2>&1; rc=$?
 # Without persistent source, PERSISTENT_PATHS is empty → deploy should still succeed
 t "M5 no persistent source → deploy ok" "0" "$rc"
 
