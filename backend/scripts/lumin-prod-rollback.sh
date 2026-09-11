@@ -127,7 +127,7 @@ recover() {
       if ! $DRY_RUN; then
         echo "  --- verification after revert ---"
         [ -s "$APP_DIR/backend/app/main.py" ] || { echo "  MISSING: backend release"; REC_OK=1; }
-        [ -s "$APP_DIR/frontend/.next/BUILD_ID" ] || { echo "  MISSING: frontend release"; REC_OK=1; }
+        [ -s "$APP_DIR/frontend/.next/standalone/.next/BUILD_ID" ] || { echo "  MISSING: frontend release"; REC_OK=1; }
         local bs fs
         bs="$(systemctl is-active faztrack-attendance-lumin.service 2>/dev/null || echo unknown)"
         fs="$(systemctl is-active faztrack-attendance-lumin-web.service 2>/dev/null || echo unknown)"
@@ -241,7 +241,7 @@ echo "Release pair (canonical): $PAIR_CANON"
 [ -d "$RELEASE_PAIR/backend-old/.venv" ] || fatal_preflight "Old backend .venv missing"
 [ -f "$RELEASE_PAIR/backend-old/.env.lumin" ] || fatal_preflight "Old backend .env.lumin missing"
 [ -f "$RELEASE_PAIR/frontend-old/.next/standalone/server.js" ] || fatal_preflight "Old frontend server.js missing"
-[ -d "$RELEASE_PAIR/frontend-old/.next/static" ] || fatal_preflight "Old frontend .next/static missing"
+[ -d "$RELEASE_PAIR/frontend-old/.next/standalone/.next/static" ] || fatal_preflight "Old frontend .next/standalone/.next/static missing"
 echo "Old release validated."
 
 # Failed-release target must not exist

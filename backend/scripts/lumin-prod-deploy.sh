@@ -47,11 +47,11 @@ if [ -n "${LUMIN_FIXTURE_ROOT:-}" ]; then
   [ -f "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" ] && FRONTEND_SHA="$(sha256sum "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" | awk '{print $1}')"
   # fixture: read expected BUILD_ID/chunks from the ARTIFACT via stdout (no temp dir)
   if [ -f "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" ]; then
-    _fx_bid="$(tar xzOf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" .next/BUILD_ID 2>/dev/null | head -1 || true)"
+    _fx_bid="$(tar xzOf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" .next/standalone/.next/BUILD_ID 2>/dev/null | head -1 || true)"
     [ -n "$_fx_bid" ] && EXPECTED_BUILD_ID="$_fx_bid"
-    _fx_ac=$(tar tzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" 2>/dev/null | grep "^.next/static/chunks/app/admin/page-.*\.js$" | head -1 | xargs -r basename || true)
-    _fx_dc=$(tar tzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" 2>/dev/null | grep "^.next/static/chunks/app/dashboard/page-.*\.js$" | head -1 | xargs -r basename || true)
-    _fx_bc=$(tar tzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" 2>/dev/null | grep "^.next/static/chunks/app/absen/page-.*\.js$" | head -1 | xargs -r basename || true)
+    _fx_ac=$(tar tzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" 2>/dev/null | grep "^.next/standalone/.next/static/chunks/app/admin/page-.*\.js$" | head -1 | xargs -r basename || true)
+    _fx_dc=$(tar tzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" 2>/dev/null | grep "^.next/standalone/.next/static/chunks/app/dashboard/page-.*\.js$" | head -1 | xargs -r basename || true)
+    _fx_bc=$(tar tzf "$_fx_dir/lumin-frontend-6e3a3e20.tar.gz" 2>/dev/null | grep "^.next/standalone/.next/static/chunks/app/absen/page-.*\.js$" | head -1 | xargs -r basename || true)
     [ -n "$_fx_ac" ] && EXPECTED_ADMIN_CHUNK="$_fx_ac"
     [ -n "$_fx_dc" ] && EXPECTED_DASH_CHUNK="$_fx_dc"
     [ -n "$_fx_bc" ] && EXPECTED_ABSEN_CHUNK="$_fx_bc"
@@ -338,7 +338,13 @@ else
 fi
 
 mx mkdir "$STAGING_DIR/backend"
-mx tar xzf "$BACKEND_TAR" -C "$STAGING_DIR/backend" --strip-components=1
+# Artifact layout is  <prefix>/backend/<payload>  (e.g. lumin-backend/backend/app/main.py),
+# so TWO leading components must be stripped to land app/ + scripts/ at the staging root.
+mx tar xzf "$BACKEND_TAR" -C "$STAGING_DIR/backend" --strip-components=2
+if ! $DRY_RUN; then
+  [ -f "$STAGING_DIR/backend/app/main.py" ] \
+    || fatal_after_switch "Backend artifact layout unexpected: app/main.py not found after extraction"
+fi
 # Ensure no .venv came from the artifact (venv must come from current release)
 if [ -d "$STAGING_DIR/backend/.venv" ]; then
   # Artifact unexpectedly shipped a .venv — move it aside (never delete)
@@ -369,8 +375,8 @@ if ! $DRY_RUN; then
   [ -f "$STAGING_DIR/backend/.env.lumin" ] || fatal_after_switch ".env.lumin missing"
   [ -f "$STAGING_DIR/backend/app/main.py" ] || fatal_after_switch "main.py missing"
   [ -f "$STAGING_DIR/frontend/.next/standalone/server.js" ] || fatal_after_switch "server.js missing"
-  [ -d "$STAGING_DIR/frontend/.next/static" ] || fatal_after_switch ".next/static missing"
-  STAGED_BUILD=$(cat "$STAGING_DIR/frontend/.next/BUILD_ID" 2>/dev/null || echo "N/A")
+  [ -d "$STAGING_DIR/frontend/.next/standalone/.next/static" ] || fatal_after_switch ".next/standalone/.next/static missing"
+  STAGED_BUILD=$(cat "$STAGING_DIR/frontend/.next/standalone/.next/BUILD_ID" 2>/dev/null || echo "N/A")
   [ "$STAGED_BUILD" = "$EXPECTED_BUILD_ID" ] || fatal_after_switch "BUILD_ID mismatch: $STAGED_BUILD"
   echo "  Staged: PASS"
 fi
@@ -433,12 +439,12 @@ if ! $DRY_RUN; then
   [ "$(curl -sf -o /dev/null -w '%{http_code}' https://attendance-lumin.gofaztrack.com/absen)" = "200" ] || fatal_after_switch "Public /absen failed"
   echo "  public health: PASS"
 
-  [ "$(cat "$APP_DIR/frontend/.next/BUILD_ID")" = "$EXPECTED_BUILD_ID" ] || fatal_after_switch "BUILD_ID mismatch"
+  [ "$(cat "$APP_DIR/frontend/.next/standalone/.next/BUILD_ID" 2>/dev/null)" = "$EXPECTED_BUILD_ID" ] || fatal_after_switch "BUILD_ID mismatch"
   echo "  BUILD_ID: PASS"
 
-  AC=$(find "$APP_DIR/frontend/.next/static/chunks/app/admin" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
-  DC=$(find "$APP_DIR/frontend/.next/static/chunks/app/dashboard" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
-  BC=$(find "$APP_DIR/frontend/.next/static/chunks/app/absen" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
+  AC=$(find "$APP_DIR/frontend/.next/standalone/.next/static/chunks/app/admin" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
+  DC=$(find "$APP_DIR/frontend/.next/standalone/.next/static/chunks/app/dashboard" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
+  BC=$(find "$APP_DIR/frontend/.next/standalone/.next/static/chunks/app/absen" -maxdepth 1 -name "page-*.js" -printf "%f\n" 2>/dev/null | head -1)
   [ "$AC" = "$EXPECTED_ADMIN_CHUNK" ] || fatal_after_switch "Admin chunk mismatch: $AC"
   [ "$DC" = "$EXPECTED_DASH_CHUNK" ] || fatal_after_switch "Dashboard chunk mismatch: $DC"
   [ "$BC" = "$EXPECTED_ABSEN_CHUNK" ] || fatal_after_switch "Absen chunk mismatch: $BC"

@@ -19,10 +19,10 @@ build() {
   local root="$1"
   rm -rf "$root" 2>/dev/null
   mkdir -p "$root/bin" "$root/app/backend/app" "$root/app/backend/.venv/bin" \
-           "$root/app/frontend/.next/standalone" \
-           "$root/app/frontend/.next/static/chunks/app/admin" \
-           "$root/app/frontend/.next/static/chunks/app/dashboard" \
-           "$root/app/frontend/.next/static/chunks/app/absen" \
+           "$root/app/frontend/.next/standalone" "$root/app/frontend/.next/standalone/.next" \
+           "$root/app/frontend/.next/standalone/.next/static/chunks/app/admin" \
+           "$root/app/frontend/.next/standalone/.next/static/chunks/app/dashboard" \
+           "$root/app/frontend/.next/standalone/.next/static/chunks/app/absen" \
            "$root/app/releases" "$root/backup/exact-id" "$root/artifacts" \
            "$root/app/backend/uploads"
 
@@ -31,30 +31,31 @@ build() {
   printf '#!/bin/sh\nexit 0\n' > "$root/app/backend/.venv/bin/uvicorn"
   chmod +x "$root/app/backend/.venv/bin/uvicorn"
   echo "OLDENV" > "$root/app/backend/.env.lumin"
-  echo "OLDBUILD" > "$root/app/frontend/.next/BUILD_ID"
+  echo "OLDBUILD" > "$root/app/frontend/.next/standalone/.next/BUILD_ID"
   echo "OLDSRV" > "$root/app/frontend/.next/standalone/server.js"
-  echo "OLDADMIN" > "$root/app/frontend/.next/static/chunks/app/admin/page-oldadmin.js"
-  echo "OLDDASH"  > "$root/app/frontend/.next/static/chunks/app/dashboard/page-olddash.js"
-  echo "OLDABSEN" > "$root/app/frontend/.next/static/chunks/app/absen/page-oldabsen.js"
+  echo "OLDADMIN" > "$root/app/frontend/.next/standalone/.next/static/chunks/app/admin/page-oldadmin.js"
+  echo "OLDDASH"  > "$root/app/frontend/.next/standalone/.next/static/chunks/app/dashboard/page-olddash.js"
+  echo "OLDABSEN" > "$root/app/frontend/.next/standalone/.next/static/chunks/app/absen/page-oldabsen.js"
   echo "OLDENVLOCAL" > "$root/app/frontend/.env.local"
   echo "oldpersist" > "$root/app/backend/uploads/f.txt"
 
   # ---- ARTIFACT payloads ----
-  mkdir -p "$root/payload-be/backend/app"
-  echo "NEW_BACKEND_MARKER" > "$root/payload-be/backend/app/main.py"
+  # Real backend artifact layout: lumin-backend/backend/app/main.py
+  mkdir -p "$root/payload-be/lumin-backend/backend/app"
+  echo "NEW_BACKEND_MARKER" > "$root/payload-be/lumin-backend/backend/app/main.py"
 
-  mkdir -p "$root/payload-fe/.next/standalone" \
-           "$root/payload-fe/.next/static/chunks/app/admin" \
-           "$root/payload-fe/.next/static/chunks/app/dashboard" \
-           "$root/payload-fe/.next/static/chunks/app/absen"
-  echo "S0kC8_NAlhQyCLKMFHHdQ" > "$root/payload-fe/.next/BUILD_ID"
+  # Real Next.js standalone layout: .next/standalone/{server.js,.next/{BUILD_ID,static/...}}
+  mkdir -p "$root/payload-fe/.next/standalone/.next/static/chunks/app/admin" \
+           "$root/payload-fe/.next/standalone/.next/static/chunks/app/dashboard" \
+           "$root/payload-fe/.next/standalone/.next/static/chunks/app/absen"
+  echo "S0kC8_NAlhQyCLKMFHHdQ" > "$root/payload-fe/.next/standalone/.next/BUILD_ID"
   echo "NEWSRV" > "$root/payload-fe/.next/standalone/server.js"
-  echo "NEWADMIN" > "$root/payload-fe/.next/static/chunks/app/admin/page-7ef835f4a59d5f3e.js"
-  echo "NEWDASH"  > "$root/payload-fe/.next/static/chunks/app/dashboard/page-18c48464202db5cb.js"
-  echo "NEWABSEN" > "$root/payload-fe/.next/static/chunks/app/absen/page-b864c4195106e108.js"
+  echo "NEWADMIN" > "$root/payload-fe/.next/standalone/.next/static/chunks/app/admin/page-7ef835f4a59d5f3e.js"
+  echo "NEWDASH"  > "$root/payload-fe/.next/standalone/.next/static/chunks/app/dashboard/page-18c48464202db5cb.js"
+  echo "NEWABSEN" > "$root/payload-fe/.next/standalone/.next/static/chunks/app/absen/page-b864c4195106e108.js"
   echo "NEWENVLOCAL" > "$root/payload-fe/.env.local"
 
-  ( cd "$root/payload-be" && tar czf "$root/artifacts/lumin-backend-413720b1.tar.gz" backend )
+  ( cd "$root/payload-be" && tar czf "$root/artifacts/lumin-backend-413720b1.tar.gz" lumin-backend )
   ( cd "$root/payload-fe" && tar czf "$root/artifacts/lumin-frontend-6e3a3e20.tar.gz" .next )
 
   # ---- fake systemctl ----
@@ -121,7 +122,7 @@ deploy() {  # $1=root, rest=env assignments
 
 pair_ok() { # both components present AND non-empty
   local r="$1"
-  [ -s "$r/app/backend/app/main.py" ] && [ -s "$r/app/frontend/.next/BUILD_ID" ] && echo yes || echo no
+  [ -s "$r/app/backend/app/main.py" ] && [ -s "$r/app/frontend/.next/standalone/.next/BUILD_ID" ] && echo yes || echo no
 }
 release_dirs() { find "$1/app/releases" -maxdepth 1 -type d -name 'release-pair-*' 2>/dev/null | wc -l | tr -d ' '; }
 failed_dirs()  { find "$1/app/releases" -maxdepth 1 -type d -name 'failed-*'       2>/dev/null | wc -l | tr -d ' '; }
@@ -137,7 +138,7 @@ FAKE_FAIL_START_BACKEND=1 deploy "$R" >/dev/null 2>&1; rc=$?
 t "M1 exit non-zero"                       "1" "$rc"
 t "M1 pair restored (both present)"        "yes" "$(pair_ok "$R")"
 t "M1 old backend content back"            "OLD_BACKEND_MARKER" "$(head -1 "$R/app/backend/app/main.py")"
-t "M1 old frontend content back"           "OLDBUILD" "$(head -1 "$R/app/frontend/.next/BUILD_ID")"
+t "M1 old frontend content back"           "OLDBUILD" "$(head -1 "$R/app/frontend/.next/standalone/.next/BUILD_ID")"
 t "M1 old env preserved"                   "OLDENV" "$(head -1 "$R/app/backend/.env.lumin")"
 t "M1 old frontend env preserved"          "OLDENVLOCAL" "$(head -1 "$R/app/frontend/.env.local")"
 t "M1 persistent preserved"                "oldpersist" "$(head -1 "$R/app/backend/uploads/f.txt")"
@@ -151,7 +152,7 @@ FAKE_FAIL_START_FRONTEND=1 deploy "$R" >/dev/null 2>&1; rc=$?
 t "M2 exit non-zero"                       "1" "$rc"
 t "M2 pair restored (both present)"        "yes" "$(pair_ok "$R")"
 t "M2 old backend content back"            "OLD_BACKEND_MARKER" "$(head -1 "$R/app/backend/app/main.py")"
-t "M2 old frontend content back"           "OLDBUILD" "$(head -1 "$R/app/frontend/.next/BUILD_ID")"
+t "M2 old frontend content back"           "OLDBUILD" "$(head -1 "$R/app/frontend/.next/standalone/.next/BUILD_ID")"
 
 # ══════════════════════════════════════════════════════════
 # M3 — public health fails -> paired rollback
@@ -169,11 +170,11 @@ R="$BASE/m4"; build "$R"
 deploy "$R" >/dev/null 2>&1; rc=$?
 t "M4 exit 0"                              "0" "$rc"
 t "M4 new backend live"                    "NEW_BACKEND_MARKER" "$(head -1 "$R/app/backend/app/main.py")"
-t "M4 new frontend live"                   "S0kC8_NAlhQyCLKMFHHdQ" "$(head -1 "$R/app/frontend/.next/BUILD_ID")"
+t "M4 new frontend live"                   "S0kC8_NAlhQyCLKMFHHdQ" "$(head -1 "$R/app/frontend/.next/standalone/.next/BUILD_ID")"
 t "M4 persistent carried into new backend" "oldpersist" "$(head -1 "$R/app/backend/uploads/f.txt")"
 t "M4 release-pair preserved"              "1" "$(release_dirs "$R")"
 t "M4 old backend preserved in pair"       "yes" "$(find "$R/app/releases" -path '*/backend-old/app/main.py' -size +0c 2>/dev/null | head -1 | grep -q . && echo yes || echo no)"
-t "M4 old frontend preserved in pair"      "yes" "$(find "$R/app/releases" -path '*/frontend-old/.next/BUILD_ID' -size +0c 2>/dev/null | head -1 | grep -q . && echo yes || echo no)"
+t "M4 old frontend preserved in pair"      "yes" "$(find "$R/app/releases" -path '*/frontend-old/.next/standalone/.next/BUILD_ID' -size +0c 2>/dev/null | head -1 | grep -q . && echo yes || echo no)"
 
 # ══════════════════════════════════════════════════════════
 # M5 — persistent content corrupted after switch -> rollback
@@ -193,17 +194,17 @@ R="$BASE/m6"; build "$R"
 # create a valid release-pair fixture to roll back to
 P="$R/app/releases/release-pair-fixture"
 mkdir -p "$P/backend-old/app" "$P/backend-old/.venv/bin" \
-         "$P/frontend-old/.next/standalone" "$P/frontend-old/.next/static"
+         "$P/frontend-old/.next/standalone" "$P/frontend-old/.next/standalone/.next/static"
 echo "PAIRBE" > "$P/backend-old/app/main.py"
 printf '#!/bin/sh\nexit 0\n' > "$P/backend-old/.venv/bin/uvicorn"; chmod +x "$P/backend-old/.venv/bin/uvicorn"
 echo "PAIRENV" > "$P/backend-old/.env.lumin"
 echo "PAIRFE" > "$P/frontend-old/.next/standalone/server.js"
-echo "PAIRBUILD" > "$P/frontend-old/.next/BUILD_ID"
+echo "PAIRBUILD" > "$P/frontend-old/.next/standalone/.next/BUILD_ID"
 ( cd "$R/artifacts" && env PATH="$R/bin:$PATH" LUMIN_FIXTURE_ROOT="$R" FAKE_FAIL_START_BACKEND=1 \
     bash "$SCRIPTS/lumin-prod-rollback.sh" --execute --release-pair "$P" ) >/dev/null 2>&1; rc=$?
 t "M6 rollback exit non-zero"              "1" "$rc"
 t "M6 no partial state (backend present)"  "yes" "$([ -s "$R/app/backend/app/main.py" ] && echo yes || echo no)"
-t "M6 no partial state (frontend present)" "yes" "$([ -s "$R/app/frontend/.next/BUILD_ID" ] && echo yes || echo no)"
+t "M6 no partial state (frontend present)" "yes" "$([ -s "$R/app/frontend/.next/standalone/.next/BUILD_ID" ] && echo yes || echo no)"
 t "M6 failed-rollback dir preserved"       "1" "$(failed_dirs "$R")"
 
 # ══════════════════════════════════════════════════════════
@@ -212,16 +213,16 @@ t "M6 failed-rollback dir preserved"       "1" "$(failed_dirs "$R")"
 R="$BASE/m7"; build "$R"
 # current live app = the NEW (healthy) release
 echo "NEW_HEALTHY_MARKER" > "$R/app/backend/app/main.py"
-echo "NEWBUILD" > "$R/app/frontend/.next/BUILD_ID"
+echo "NEWBUILD" > "$R/app/frontend/.next/standalone/.next/BUILD_ID"
 # release-pair holds the OLD release, which is UNHEALTHY
 P="$R/app/releases/release-pair-m7"
 mkdir -p "$P/backend-old/app" "$P/backend-old/.venv/bin" \
-         "$P/frontend-old/.next/standalone" "$P/frontend-old/.next/static"
+         "$P/frontend-old/.next/standalone" "$P/frontend-old/.next/standalone/.next/static"
 echo "UNHEALTHY_MARKER" > "$P/backend-old/app/main.py"
 printf '#!/bin/sh\nexit 0\n' > "$P/backend-old/.venv/bin/uvicorn"; chmod +x "$P/backend-old/.venv/bin/uvicorn"
 echo "OLDENVP" > "$P/backend-old/.env.lumin"
 echo "OLDSRV" > "$P/frontend-old/.next/standalone/server.js"
-echo "OLDBUILDPAIR" > "$P/frontend-old/.next/BUILD_ID"
+echo "OLDBUILDPAIR" > "$P/frontend-old/.next/standalone/.next/BUILD_ID"
 
 ( cd "$R/artifacts" && env PATH="$R/bin:$PATH" LUMIN_FIXTURE_ROOT="$R" \
     FAKE_MARKER_DIR="$R/app" \
@@ -229,7 +230,7 @@ echo "OLDBUILDPAIR" > "$P/frontend-old/.next/BUILD_ID"
 
 t "M7 exit non-zero (rollback target unhealthy)" "1" "$rc"
 t "M7 reverted to NEW release"                   "NEW_HEALTHY_MARKER" "$(head -1 "$R/app/backend/app/main.py" 2>/dev/null)"
-t "M7 frontend also reverted to NEW"             "NEWBUILD" "$(head -1 "$R/app/frontend/.next/BUILD_ID" 2>/dev/null)"
+t "M7 frontend also reverted to NEW"             "NEWBUILD" "$(head -1 "$R/app/frontend/.next/standalone/.next/BUILD_ID" 2>/dev/null)"
 t "M7 new release came from failed-release"      "yes" "$(find "$R/app/releases" -maxdepth 1 -type d -name 'failed-rollback-*' 2>/dev/null | head -1 | grep -q . && echo yes || echo no)"
 t "M7 unhealthy OLD pair preserved"              "yes" "$(find "$R/app/releases" -maxdepth 2 -type d -name 'backend-old-unhealthy-*' 2>/dev/null | head -1 | grep -q . && echo yes || echo no)"
 t "M7 unhealthy content preserved intact"        "UNHEALTHY_MARKER" "$(find "$R/app/releases" -path '*backend-old-unhealthy-*/app/main.py' 2>/dev/null | head -1 | xargs -r head -1)"

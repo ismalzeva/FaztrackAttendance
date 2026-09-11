@@ -20,14 +20,14 @@ build() {
   rm -rf "$root" 2>/dev/null
   mkdir -p "$root/bin" \
            "$root/app/backend/app" "$root/app/backend/.venv/bin" "$root/app/backend/uploads" \
-           "$root/app/frontend/.next/standalone" "$root/app/frontend/.next/static" \
+           "$root/app/frontend/.next/standalone" "$root/app/frontend/.next/standalone/.next" "$root/app/frontend/.next/static" \
            "$root/backups"
 
   echo "BE" > "$root/app/backend/app/main.py"
   printf '#!/bin/sh\nexit 0\n' > "$root/app/backend/.venv/bin/uvicorn"
   chmod +x "$root/app/backend/.venv/bin/uvicorn"
   echo "ENVLUMIN" > "$root/app/backend/.env.lumin"
-  echo "BUILDID" > "$root/app/frontend/.next/BUILD_ID"
+  echo "BUILDID" > "$root/app/frontend/.next/standalone/.next/BUILD_ID"
   echo "SRV" > "$root/app/frontend/.next/standalone/server.js"
   echo "ENVLOCAL" > "$root/app/frontend/.env.local"
   echo "persist" > "$root/app/backend/uploads/f.txt"
@@ -76,7 +76,7 @@ t "B7 verification-result covered"          "yes" "$(grep -q '  VERIFICATION-RES
 t "B8 VERIFICATION-RESULT is PASS"          "yes" "$(grep -q '^VERIFICATION-RESULT: PASS$' "$BDIR/VERIFICATION-RESULT.txt" 2>/dev/null && echo yes || echo no)"
 t "B9 db dump present and non-empty"        "yes" "$(find "$BDIR" -maxdepth 1 -name 'db-dump-*.dump' -size +0c 2>/dev/null | head -1 | grep -q . && echo yes || echo no)"
 t "B10 backend copied"                      "yes" "$([ -s "$BDIR/backend/app/main.py" ] && echo yes || echo no)"
-t "B11 frontend copied"                     "yes" "$([ -s "$BDIR/frontend/.next/BUILD_ID" ] && echo yes || echo no)"
+t "B11 frontend copied"                     "yes" "$([ -s "$BDIR/frontend/.next/standalone/.next/BUILD_ID" ] && echo yes || echo no)"
 t "B12 env files backed up"                 "yes" "$([ -s "$BDIR/backend.env.lumin" ] && [ -s "$BDIR/frontend.env.local" ] && echo yes || echo no)"
 t "B13 persistent data backed up"           "yes" "$(find "$BDIR" -name f.txt -size +0c 2>/dev/null | head -1 | grep -q . && echo yes || echo no)"
 t "B14 no leftover temp file anywhere"      "0" "$(find "$BDIR" -name '*.tmp' 2>/dev/null | wc -l | tr -d ' ')"

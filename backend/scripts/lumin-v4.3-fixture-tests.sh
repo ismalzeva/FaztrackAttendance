@@ -21,8 +21,8 @@ build_fixture() {
   local root="$1"
   rm -rf "$root" 2>/dev/null
   mkdir -p "$root/bin" "$root/app/backend/app" "$root/app/backend/.venv/bin" \
-           "$root/app/frontend/.next/standalone" "$root/app/frontend/.next/static/chunks/app/admin" \
-           "$root/app/frontend/.next/static/chunks/app/dashboard" "$root/app/frontend/.next/static/chunks/app/absen" \
+           "$root/app/frontend/.next/standalone" "$root/app/frontend/.next/standalone/.next" "$root/app/frontend/.next/standalone/.next/static/chunks/app/admin" \
+           "$root/app/frontend/.next/standalone/.next/static/chunks/app/dashboard" "$root/app/frontend/.next/standalone/.next/static/chunks/app/absen" \
            "$root/app/releases" "$root/backup" "$root/artifacts"
 
   # backend fixture
@@ -30,11 +30,11 @@ build_fixture() {
   echo "#!/bin/sh" > "$root/app/backend/.venv/bin/uvicorn"; chmod +x "$root/app/backend/.venv/bin/uvicorn"
   echo "ENV" > "$root/app/backend/.env.lumin"
   # frontend fixture
-  echo "S0kC8_NAlhQyCLKMFHHdQ" > "$root/app/frontend/.next/BUILD_ID"
+  echo "S0kC8_NAlhQyCLKMFHHdQ" > "$root/app/frontend/.next/standalone/.next/BUILD_ID"
   echo "srv" > "$root/app/frontend/.next/standalone/server.js"
-  echo "1" > "$root/app/frontend/.next/static/chunks/app/admin/page-7ef835f4a59d5f3e.js"
-  echo "2" > "$root/app/frontend/.next/static/chunks/app/dashboard/page-18c48464202db5cb.js"
-  echo "3" > "$root/app/frontend/.next/static/chunks/app/absen/page-b864c4195106e108.js"
+  echo "1" > "$root/app/frontend/.next/standalone/.next/static/chunks/app/admin/page-7ef835f4a59d5f3e.js"
+  echo "2" > "$root/app/frontend/.next/standalone/.next/static/chunks/app/dashboard/page-18c48464202db5cb.js"
+  echo "3" > "$root/app/frontend/.next/standalone/.next/static/chunks/app/absen/page-b864c4195106e108.js"
   echo "ENV" > "$root/app/frontend/.env.local"
   # persistent
   mkdir -p "$root/app/backend/uploads"; echo "u" > "$root/app/backend/uploads/f.txt"
@@ -170,11 +170,12 @@ fi
 # ══════════════════════════════════════════
 R="$BASE/t5"; build_fixture "$R"
 PAIR="$R/app/releases/release-pair-20260101_000000"
-mkdir -p "$PAIR/backend-old/app" "$PAIR/backend-old/.venv/bin" "$PAIR/frontend-old/.next/standalone" "$PAIR/frontend-old/.next/static"
+mkdir -p "$PAIR/backend-old/app" "$PAIR/backend-old/.venv/bin" "$PAIR/frontend-old/.next/standalone/.next/static"
 echo main > "$PAIR/backend-old/app/main.py"
 echo uvicorn > "$PAIR/backend-old/.venv/bin/uvicorn"
 echo env > "$PAIR/backend-old/.env.lumin"
 echo srv > "$PAIR/frontend-old/.next/standalone/server.js"
+echo bid > "$PAIR/frontend-old/.next/standalone/.next/BUILD_ID"
 BEFORE=$(find "$R" -type f | wc -l)
 out=$(PATH="$R/bin:$PATH" LUMIN_FIXTURE_ROOT="$R" bash "$SCRIPTS/lumin-prod-rollback.sh" --release-pair "$PAIR" 2>&1); rc=$?
 AFTER=$(find "$R" -type f | wc -l)
