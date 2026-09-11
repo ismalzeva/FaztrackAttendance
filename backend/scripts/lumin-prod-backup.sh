@@ -19,6 +19,20 @@ RELEASE_ID="${RELEASE_ID:-$(date +%Y%m%d_%H%M%S)}"
 DRY_RUN=true
 [[ "${1:-}" == "--execute" ]] && DRY_RUN=false
 
+# ── FIXTURE MODE (tests only; loud + explicit) ──
+FIXTURE_MODE=false
+if [ -n "${LUMIN_FIXTURE_ROOT:-}" ]; then
+  FIXTURE_MODE=true
+  APP_DIR="$LUMIN_FIXTURE_ROOT/app"
+  BACKUP_BASE="$LUMIN_FIXTURE_ROOT/backups"
+  EXPECTED_HOSTNAME="$(hostname)"   # fixture: accept current host
+  echo "############################################################"
+  echo "# FIXTURE MODE ACTIVE — NOT PRODUCTION                        #"
+  echo "# APP_DIR=$APP_DIR"
+  echo "# BACKUP_BASE=$BACKUP_BASE"
+  echo "############################################################"
+fi
+
 VALIDATION_ERRORS=0
 
 fatal_preflight() { echo "FATAL (preflight): $1"; exit 1; }
@@ -43,7 +57,7 @@ echo ""
 
 # ── VALIDATE ENVIRONMENT (preflight — no mutation yet) ──
 [ "$(hostname)" = "$EXPECTED_HOSTNAME" ] || fatal_preflight "Hostname mismatch: expected $EXPECTED_HOSTNAME, got $(hostname)"
-[ "$(whoami)" = "$EXPECTED_USER" ] || fatal_preflight "Must run as $EXPECTED_USER, got $(whoami)"
+[ "$(whoami)" = "$EXPECTED_USER" ] || $FIXTURE_MODE || fatal_preflight "Must run as $EXPECTED_USER, got $(whoami)"
 [ -d "$APP_DIR" ] || fatal_preflight "App directory not found: $APP_DIR"
 
 BACKUP_DIR="$BACKUP_BASE/$RELEASE_ID"
@@ -194,15 +208,25 @@ fi
 # ── 9. CHECKSUMS (INCLUDE manifest AND verification result; relative paths) ──
 echo "--- Checksums ---"
 if $DRY_RUN; then
-  echo "[DRY-RUN] Would write checksums-sha256.txt (includes BACKUP-MANIFEST.md + VERIFICATION-RESULT.txt)"
+  echo "[DRY-RUN] Would write checksums-sha256.txt (includes BACKUP-MANIFEST.md + VERIFICATION-RESULT.txt; file list kept outside the backup dir)"
   echo "[DRY-RUN] Would run sha256sum -c (self-verify)"
 else
+  # File list MUST live outside BACKUP_DIR: a redirect target inside the backup
+  # directory would be created before find runs, get enumerated into its own
+  # checksum list, and then disappear -> sha256sum -c would fail.
+  FILELIST_OUT="$(mktemp)" || fatal_preflight "Cannot create temporary file list"
   (
     cd "$BACKUP_DIR" || fatal_preflight "Cannot cd to backup dir"
-    find . -type f -not -name "checksums-sha256.txt" -printf "%P\n" | sort > "$BACKUP_DIR/.filelist.tmp"
-    while IFS= read -r f; do sha256sum "$f"; done < "$BACKUP_DIR/.filelist.tmp" > checksums-sha256.txt
-    rm -f "$BACKUP_DIR/.filelist.tmp"
-  ) || fatal_preflight "Checksum generation failed"
+    find . -type f -not -name "checksums-sha256.txt" -not -name ".filelist.tmp" \
+      -printf "%P\n" | LC_ALL=C sort > "$FILELIST_OUT"
+    while IFS= read -r f; do sha256sum -- "$f"; done < "$FILELIST_OUT" > checksums-sha256.txt
+  ) || { rm -f "$FILELIST_OUT"; fatal_preflight "Checksum generation failed"; }
+  rm -f "$FILELIST_OUT"
+
+  # Paranoia: a stray file list must never appear inside the backup directory
+  if [ -e "$BACKUP_DIR/.filelist.tmp" ]; then
+    fatal_preflight "Stray .filelist.tmp present inside backup directory"
+  fi
 
   # Every mandatory artifact must be covered by the checksum file
   for req in BACKUP-MANIFEST.md VERIFICATION-RESULT.txt; do
